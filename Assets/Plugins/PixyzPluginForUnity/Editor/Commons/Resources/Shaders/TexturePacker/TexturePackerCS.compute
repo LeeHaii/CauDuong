@@ -1,0 +1,83 @@
+﻿#pragma kernel Unpack
+
+Texture2D<float4> MainTex; //MainTex
+
+RWTexture2D<float4> Tex0; //Red
+RWTexture2D<float4> Tex1; //Green
+RWTexture2D<float4> Tex2; //Blue
+RWTexture2D<float4> Tex3; //Alpha
+
+struct Globals
+{
+    int channelIndex;
+    int operationType;
+    float operationFactor;
+};
+
+StructuredBuffer<Globals> Params;
+
+float4 assignChannelValue(int chan, float value, int operationType, float factor)
+{
+    float4 color = float4(0, 0, 0, 1);
+    if (chan == 0)
+    {
+        color.r = value;
+    }
+    else if (chan == 1)
+    {
+        color.g = value;
+    }
+    else if (chan == 2)
+    {
+        color.b = value;
+    }
+    else
+    {
+        color.a = value;
+    }
+
+    if (operationType == 1)
+    {
+        color = float4(1, 1, 1, 1) - color;
+    }
+    else if (operationType == 2)
+    {
+        color = float4(factor, factor, factor, factor) * color;
+    }
+
+    return color;
+}
+
+[numthreads(8, 8, 1)]
+void Unpack(uint3 id : SV_DispatchThreadID)
+{
+    uint2 xy = id.xy;
+
+#if !UNITY_UV_STARTS_AT_TOP
+    uint width = 0;
+    uint height = 0;
+
+    MainTex.GetDimensions(width, height);
+    xy.y = height - id.y;
+#endif
+
+
+    float4 color = MainTex[xy];
+
+    if (Params[0].channelIndex != -1)
+    {
+        Tex0[id.xy] = assignChannelValue(Params[0].channelIndex, color.r, Params[0].operationType, Params[0].operationFactor);
+    }
+    if (Params[1].channelIndex != -1)
+    {
+        Tex1[id.xy] = assignChannelValue(Params[1].channelIndex, color.g, Params[1].operationType, Params[1].operationFactor);
+    }
+    if (Params[2].channelIndex != -1)
+    {
+        Tex2[id.xy] = assignChannelValue(Params[2].channelIndex, color.b, Params[2].operationType, Params[2].operationFactor);
+    }
+    if (Params[3].channelIndex != -1)
+    {
+        Tex3[id.xy] = assignChannelValue(Params[3].channelIndex, color.a, Params[3].operationType, Params[3].operationFactor);
+    }
+}

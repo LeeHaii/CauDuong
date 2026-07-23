@@ -1,0 +1,24 @@
+fileFormatVersion: 2
+guid: 23c7f5651fb51ed44abab6b57510abe2
+TrueTypeFontImporter:
+  externalObjects: {}
+  serializedVersion: 4
+  fontSize: 16
+  forceTextureCase: -2
+  characterSpacing: 0
+  characterPadding: 1
+  includeFontData: 1
+  fontName: Adobe Thai
+  fontNames:
+  - Adobe Thai
+  fallbackFontReferences:
+  - {fileID: 12800000, guid: 3132547149c883c4f9c240bdc7c66c53, type: 3}
+  - {fileID: 12800000, guid: b27602b71c7bb024386741068a7129e2, type: 3}
+  customCharacters: 
+  fontRenderingMode: 0
+  ascentCalculationMode: 1
+  useLegacyBoundsCalculation: 0
+  shouldRoundAdvanceValue: 1
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
