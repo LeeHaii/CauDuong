@@ -27,9 +27,9 @@ namespace Pixyz.Commons.Utilities
 		{
 			Shader shader = null;
 #if UNITY_2019_1_OR_NEWER
-			if (GraphicsSettings.renderPipelineAsset)
+			if (GraphicsSettings.defaultRenderPipeline)
 			{
-				shader = UnityEngine.Rendering.GraphicsSettings.renderPipelineAsset.defaultShader;
+				shader = UnityEngine.Rendering.GraphicsSettings.defaultRenderPipeline.defaultShader;
 			}
 #else
 		if (Rendering.GraphicsSettings.renderPipelineAsset)

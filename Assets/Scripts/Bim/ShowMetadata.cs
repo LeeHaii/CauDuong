@@ -120,13 +120,13 @@ public class ShowMetadata : MonoBehaviour
     {
         GameObject targetObj = obj;
         bool hasHouseComp = targetObj.TryGetComponent(out HouseComponent houseComp) && houseComp.Data != null;
-        bool hasPixyz = targetObj.TryGetComponent(out Pixyz.ImportSDK.Metadata pixyzMetadata);
+        bool hasIfcMetadata = targetObj.TryGetComponent(out IfcElementMetadata ifcMetadata);
 
-        if (!hasHouseComp && !hasPixyz && targetObj.transform.parent != null)
+        if (!hasHouseComp && !hasIfcMetadata && targetObj.transform.parent != null)
         {
             targetObj = targetObj.transform.parent.gameObject;
             hasHouseComp = targetObj.TryGetComponent(out houseComp) && houseComp.Data != null;
-            hasPixyz = targetObj.TryGetComponent(out pixyzMetadata);
+            hasIfcMetadata = targetObj.TryGetComponent(out ifcMetadata);
         }
 
         corHeader.text = targetObj.name;
@@ -146,10 +146,10 @@ public class ShowMetadata : MonoBehaviour
             AddUIEntry("Status", houseComp.Data.status);
             AddUIEntry("Residents", houseComp.Data.residential_number.ToString());
         }
-        // Fallback to Pixyz Metadata if no HouseComponent is found or if both exist
-        else if (hasPixyz)
+        // Fallback to IFC metadata if no HouseComponent is found.
+        else if (hasIfcMetadata)
         {
-            foreach (var property in pixyzMetadata.getProperties())
+            foreach (var property in ifcMetadata.GetProperties())
             {
                 string key = property.Key;
                 string value = property.Value;

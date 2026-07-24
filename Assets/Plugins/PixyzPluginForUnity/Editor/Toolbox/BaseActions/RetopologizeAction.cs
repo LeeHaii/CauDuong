@@ -123,7 +123,7 @@ namespace Pixyz.Toolbox.Editor
                 if (gridResolution >= 1000)
                     warnings.Add("Quality value is too high! (The execution can take a lot of time)");
             }
-            if (bakeMaps && UnityEngine.Rendering.GraphicsSettings.renderPipelineAsset != null)
+            if (bakeMaps && UnityEngine.Rendering.GraphicsSettings.defaultRenderPipeline != null)
             {
                 warnings.Add("Baking maps is only compatible with built-in render pipeline");
             }

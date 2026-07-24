@@ -40,8 +40,8 @@ namespace Pixyz.RuleEngine.Editor
             foreach (GameObject gameObject in input) {
                 Rigidbody rigidbody = gameObject.GetOrAddComponent<Rigidbody>();
                 rigidbody.mass = mass;
-                rigidbody.drag = drag;
-                rigidbody.angularDrag = angularDrag;
+                rigidbody.linearDamping = drag;
+                rigidbody.angularDamping = angularDrag;
                 rigidbody.useGravity = useGravity;
                 rigidbody.isKinematic = isKinematic;
                 rigidbody.interpolation = interpolate;

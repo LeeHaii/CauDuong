@@ -6,6 +6,8 @@
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/
+/Tools/XbimIfcConverter/[Bb]in/
+/Tools/XbimIfcConverter/[Oo]bj/
 /[Bb]uild/
 /[Bb]uilds/
 /[Ll]ogs/
@@ -35,6 +37,7 @@
 ExportedObj/
 .consulo/
 *.csproj
+!/Tools/XbimIfcConverter/XbimIfcConverter.csproj
 *.unityproj
 *.sln
 *.suo

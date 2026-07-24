@@ -61,12 +61,12 @@ public class HoverManager : MonoBehaviour
                 // 2. Check for Metadata component on the object itself
                 else 
                 {
-                    bool hasMetadata = hitTransform.TryGetComponent<Pixyz.ImportSDK.Metadata>(out _);
+                    bool hasMetadata = hitTransform.TryGetComponent<IfcElementMetadata>(out _);
                     
                     // 3. If no metadata on the object, check 1 level above (its parent)
                     if (!hasMetadata && hitTransform.parent != null)
                     {
-                        hasMetadata = hitTransform.parent.TryGetComponent<Pixyz.ImportSDK.Metadata>(out _);
+                        hasMetadata = hitTransform.parent.TryGetComponent<IfcElementMetadata>(out _);
                     }
 
                     if (hasMetadata && bimDataProperties.GetBIMdata())

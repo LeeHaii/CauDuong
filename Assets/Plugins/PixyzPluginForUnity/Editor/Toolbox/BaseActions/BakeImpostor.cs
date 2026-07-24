@@ -290,7 +290,7 @@ namespace Pixyz.Toolbox.Editor
         public override IList<string> getWarnings()
         {
             var warnings = new List<string>();
-            if (UnityEngine.Rendering.GraphicsSettings.renderPipelineAsset != null)
+            if (UnityEngine.Rendering.GraphicsSettings.defaultRenderPipeline != null)
             {
                 warnings.Add("Baking maps is only compatible with built-in render pipeline");
             }
