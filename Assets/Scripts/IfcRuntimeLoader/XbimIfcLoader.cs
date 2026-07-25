@@ -2,9 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
-using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Debug = UnityEngine.Debug;
@@ -21,6 +21,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [SerializeField] private Material defaultMaterial;
     [SerializeField] private bool generateMeshColliders;
 
+    [Header("Geometry Optimization")]
+    [Tooltip("Maximum curve-to-segment deviation in millimetres. Higher values reduce triangle counts.")]
+    [SerializeField, Min(0.01f)] private float linearDeflectionMillimetres = 5f;
+    [Tooltip("Maximum angular deviation in degrees. Higher values reduce segments around curves.")]
+    [SerializeField, Range(1f, 90f)] private float angularDeflectionDegrees = 30f;
+
     [Header("Import Budget")]
     [Min(1)]
     [SerializeField] private int meshesPerFrame = 16;
@@ -30,6 +36,18 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private Coroutine loadRoutine;
 
     public bool IsLoading { get; private set; }
+    public float LinearDeflection
+    {
+        get => linearDeflectionMillimetres;
+        set => linearDeflectionMillimetres = Mathf.Clamp(value, 0.01f, 1000f);
+    }
+
+    public float AngularDeflection
+    {
+        get => angularDeflectionDegrees;
+        set => angularDeflectionDegrees = Mathf.Clamp(value, 1f, 90f);
+    }
+
     public event Action<string> StatusChanged;
     public event Action<GameObject> LoadCompleted;
     public event Action<string> LoadFailed;
@@ -68,29 +86,27 @@ public sealed class XbimIfcLoader : MonoBehaviour
         Directory.CreateDirectory(cacheDirectory);
         var meshPath = Path.Combine(cacheDirectory, Guid.NewGuid().ToString("N") + ".xbimmesh");
 
-        SetStatus("Converting IFC geometry...");
+        SetStatus(
+            $"Converting IFC geometry at {LinearDeflection:G4} mm / " +
+            $"{AngularDeflection:G4} deg deflection...");
 
         Process process;
-        Task<string> standardOutput;
-        Task<string> standardError;
 
         try
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName = converterPath,
-                Arguments = Quote(path) + " " + Quote(meshPath),
+                Arguments = BuildConverterArguments(path, meshPath),
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
                 WorkingDirectory = Path.GetDirectoryName(converterPath)
             };
 
             process = new Process { StartInfo = startInfo };
             process.Start();
-            standardOutput = process.StandardOutput.ReadToEndAsync();
-            standardError = process.StandardError.ReadToEndAsync();
         }
         catch (Exception exception)
         {
@@ -100,27 +116,24 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         using (process)
         {
-            while (!process.HasExited)
+            while (!process.HasExited && !IsFileReady(meshPath))
             {
                 yield return null;
             }
 
-            while (!standardOutput.IsCompleted || !standardError.IsCompleted)
+            if (process.HasExited && process.ExitCode != 0)
             {
-                yield return null;
-            }
-
-            if (process.ExitCode != 0)
-            {
-                Fail($"xBIM conversion failed:\n{standardError.Result}");
+                Fail($"xBIM conversion failed with exit code {process.ExitCode}.");
                 DeleteTemporaryFile(meshPath);
                 yield break;
             }
+        }
 
-            if (!string.IsNullOrWhiteSpace(standardOutput.Result))
-            {
-                Debug.Log(standardOutput.Result.Trim());
-            }
+        if (!File.Exists(meshPath) || new FileInfo(meshPath).Length == 0)
+        {
+            Fail("xBIM conversion completed without producing mesh data.");
+            DeleteTemporaryFile(meshPath);
+            yield break;
         }
 
         SetStatus("Creating Unity hierarchy and meshes...");
@@ -173,6 +186,28 @@ public sealed class XbimIfcLoader : MonoBehaviour
         loadRoutine = null;
         SetStatus("IFC import complete.");
         LoadCompleted?.Invoke(loadedModel);
+    }
+
+    private static bool IsFileReady(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            return stream.Length > 0;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private IEnumerator ImportMeshFile(string path, string modelName)
@@ -234,7 +269,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
                     metresPerUnit.ToString("G9")),
                 new KeyValuePair<string, string>(
                     "Local Origin (IFC coordinates)",
-                    $"{originX:G9}, {originY:G9}, {originZ:G9}")
+                    $"{originX:G9}, {originY:G9}, {originZ:G9}"),
+                new KeyValuePair<string, string>(
+                    "Linear Deflection (mm)",
+                    LinearDeflection.ToString("G9", CultureInfo.InvariantCulture)),
+                new KeyValuePair<string, string>(
+                    "Angular Deflection (degrees)",
+                    AngularDeflection.ToString("G9", CultureInfo.InvariantCulture))
             });
 
         var hierarchyObjects = CreateHierarchy(hierarchy, loadedModel.transform);
@@ -633,6 +674,23 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private static string Quote(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";
+    }
+
+    private string BuildConverterArguments(string inputPath, string outputPath)
+    {
+        return string.Join(
+            " ",
+            Quote(inputPath),
+            Quote(outputPath),
+            LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
+            AngularDeflection.ToString("R", CultureInfo.InvariantCulture));
+    }
+
+    private void OnValidate()
+    {
+        LinearDeflection = linearDeflectionMillimetres;
+        AngularDeflection = angularDeflectionDegrees;
+        meshesPerFrame = Mathf.Max(1, meshesPerFrame);
     }
 
     private static string ReadSafeString(BinaryReader reader, string label)

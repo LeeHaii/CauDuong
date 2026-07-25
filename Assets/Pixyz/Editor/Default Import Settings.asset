@@ -33,7 +33,7 @@ MonoBehaviour:
   lodsMode: 1
   qualities:
     _lods:
-    - quality: 0
+    - quality: 3
       threshold: 0.7
     - quality: 2
       threshold: 0.35

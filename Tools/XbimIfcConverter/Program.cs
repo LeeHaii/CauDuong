@@ -10,15 +10,47 @@ using Xbim.ModelGeometry.Scene;
 
 const uint Magic = 0x4D494258; // "XBIM" in little-endian files.
 const int FormatVersion = 2;
+const double DefaultLinearDeflectionMillimetres = 5d;
+const double DefaultAngularDeflectionDegrees = 30d;
 
-if (args.Length != 2)
+if (args.Length is not 2 and not 4)
 {
-    Console.Error.WriteLine("Usage: XbimIfcConverter <input.ifc> <output.xbimmesh>");
+    Console.Error.WriteLine(
+        "Usage: XbimIfcConverter <input.ifc> <output.xbimmesh> " +
+        "[linearDeflectionMillimetres angularDeflectionDegrees]");
     return 2;
 }
 
 var inputPath = Path.GetFullPath(args[0]);
 var outputPath = Path.GetFullPath(args[1]);
+var linearDeflectionMillimetres = DefaultLinearDeflectionMillimetres;
+var angularDeflectionDegrees = DefaultAngularDeflectionDegrees;
+
+if (args.Length == 4 &&
+    (!double.TryParse(
+         args[2],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out linearDeflectionMillimetres) ||
+     !double.TryParse(
+         args[3],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out angularDeflectionDegrees)))
+{
+    Console.Error.WriteLine("Deflection values must be valid invariant-culture numbers.");
+    return 4;
+}
+
+if (!double.IsFinite(linearDeflectionMillimetres) ||
+    linearDeflectionMillimetres is < 0.01d or > 1000d ||
+    !double.IsFinite(angularDeflectionDegrees) ||
+    angularDeflectionDegrees is < 1d or > 90d)
+{
+    Console.Error.WriteLine(
+        "Linear deflection must be 0.01-1000 mm and angular deflection must be 1-90 degrees.");
+    return 4;
+}
 
 if (!File.Exists(inputPath))
 {
@@ -34,6 +66,15 @@ try
     Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
     using var model = IfcStore.Open(inputPath);
+    var unitsPerMetre = model.ModelFactors.OneMetre;
+    var metresPerUnit = unitsPerMetre > 0d ? 1d / unitsPerMetre : 1d;
+    var linearDeflectionModelUnits =
+        linearDeflectionMillimetres * unitsPerMetre / 1000d;
+    var angularDeflectionRadians = angularDeflectionDegrees * Math.PI / 180d;
+
+    model.ModelFactors.DeflectionTolerance = linearDeflectionModelUnits;
+    model.ModelFactors.DeflectionAngle = angularDeflectionRadians;
+
     var context = new Xbim3DModelContext(model);
     context.CreateContext();
 
@@ -41,16 +82,20 @@ try
         .Where(shape => shape.RepresentationType ==
                         XbimGeometryRepresentationType.OpeningsAndAdditionsIncluded)
         .ToList();
+    var productStyleLabels = new Dictionary<int, int>();
+    var shapeExports = shapeInstances
+        .Select(shape => new ShapeExport(
+            shape,
+            ResolveStyleLabel(model, shape, productStyleLabels)))
+        .ToList();
 
-    var unitsPerMetre = model.ModelFactors.OneMetre;
-    var metresPerUnit = unitsPerMetre > 0d ? 1d / unitsPerMetre : 1d;
-    var productLabels = shapeInstances
-        .Select(shape => shape.IfcProductLabel)
+    var productLabels = shapeExports
+        .Select(export => export.Shape.IfcProductLabel)
         .ToHashSet();
 
     var hierarchy = BuildHierarchy(model, productLabels);
-    var styleLabels = shapeInstances
-        .Select(shape => shape.StyleLabel)
+    var styleLabels = shapeExports
+        .Select(export => export.StyleLabel)
         .Append(0)
         .Distinct()
         .OrderBy(label => label)
@@ -110,8 +155,9 @@ try
     var hasOrigin = false;
     var origin = Vector3d.Zero;
 
-    foreach (var shapeInstance in shapeInstances)
+    foreach (var shapeExport in shapeExports)
     {
+        var shapeInstance = shapeExport.Shape;
         var geometry = context.ShapeGeometry(shapeInstance);
         var shapeData = ((IXbimShapeGeometryData)geometry).ShapeData;
         if (shapeData is not { Length: > 0 })
@@ -202,7 +248,7 @@ try
         }
 
         writer.Write(1); // One style per xBIM shape instance.
-        writer.Write(shapeInstance.StyleLabel);
+        writer.Write(shapeExport.StyleLabel);
         writer.Write(indices.Length);
         foreach (var index in indices)
         {
@@ -224,7 +270,9 @@ try
 
     Console.WriteLine(
         $"Converted {meshCount} meshes, {hierarchy.Count} hierarchy nodes, " +
-        $"{styles.Count} styles at {metresPerUnit:G6} metres/unit to {outputPath}");
+        $"{styles.Count} styles at {metresPerUnit:G6} metres/unit with " +
+        $"{linearDeflectionMillimetres:G6} mm linear / " +
+        $"{angularDeflectionDegrees:G6} deg angular deflection to {outputPath}");
     return 0;
 }
 catch (Exception exception)
@@ -544,6 +592,181 @@ static void AddMetadata(
     }
 }
 
+static int ResolveStyleLabel(
+    IfcStore model,
+    XbimShapeInstance shape,
+    IDictionary<int, int> productStyleLabels)
+{
+    if (shape.StyleLabel > 0)
+    {
+        return shape.StyleLabel;
+    }
+
+    if (productStyleLabels.TryGetValue(shape.IfcProductLabel, out var cached))
+    {
+        return cached;
+    }
+
+    var product = model.Instances[shape.IfcProductLabel] as IIfcProduct;
+    var resolved = product == null ? 0 : ResolveProductStyleLabel(product);
+    productStyleLabels[shape.IfcProductLabel] = resolved;
+    return resolved;
+}
+
+static int ResolveProductStyleLabel(object product)
+{
+    // Explicit representation-item styles override material presentation styles.
+    var styleLabel = FindSurfaceStyleLabel(ReadMember(product, "Representation"));
+    if (styleLabel > 0)
+    {
+        return styleLabel;
+    }
+
+    styleLabel = FindAssociatedMaterialStyleLabel(product);
+    if (styleLabel > 0)
+    {
+        return styleLabel;
+    }
+
+    foreach (var relationName in new[] { "IsTypedBy", "IsDefinedBy" })
+    {
+        foreach (var relation in EnumerateObjects(ReadMember(product, relationName)))
+        {
+            var relatingType = ReadMember(relation, "RelatingType");
+            if (relatingType == null)
+            {
+                continue;
+            }
+
+            styleLabel = FindSurfaceStyleLabel(ReadMember(relatingType, "RepresentationMaps"));
+            if (styleLabel > 0)
+            {
+                return styleLabel;
+            }
+
+            styleLabel = FindAssociatedMaterialStyleLabel(relatingType);
+            if (styleLabel > 0)
+            {
+                return styleLabel;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int FindAssociatedMaterialStyleLabel(object productOrType)
+{
+    foreach (var relation in EnumerateObjects(ReadMember(productOrType, "HasAssociations")))
+    {
+        var material = ReadMember(relation, "RelatingMaterial");
+        if (material == null)
+        {
+            continue;
+        }
+
+        var styleLabel = FindSurfaceStyleLabel(material);
+        if (styleLabel > 0)
+        {
+            return styleLabel;
+        }
+    }
+
+    return 0;
+}
+
+static int FindSurfaceStyleLabel(object? root)
+{
+    if (root == null)
+    {
+        return 0;
+    }
+
+    string[] traversedMembers =
+    [
+        "Representations",
+        "RepresentationMaps",
+        "MappedRepresentation",
+        "MappingSource",
+        "Items",
+        "StyledByItem",
+        "Styles",
+        "LayerAssignments",
+        "LayerStyles",
+        "HasRepresentation",
+        "ForLayerSet",
+        "LayerSet",
+        "MaterialLayers",
+        "ForProfileSet",
+        "ProfileSet",
+        "MaterialProfiles",
+        "ForConstituentSet",
+        "ConstituentSet",
+        "MaterialConstituents",
+        "Materials",
+        "Material"
+    ];
+
+    var pending = new Queue<(object Value, int Depth)>();
+    var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+    pending.Enqueue((root, 0));
+
+    while (pending.Count > 0)
+    {
+        var (value, depth) = pending.Dequeue();
+        if (depth > 12 || value is string)
+        {
+            continue;
+        }
+
+        if (value is IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                if (item != null)
+                {
+                    pending.Enqueue((item, depth));
+                }
+            }
+
+            continue;
+        }
+
+        var valueType = value.GetType();
+        if (!valueType.IsValueType && !visited.Add(value))
+        {
+            continue;
+        }
+
+        if (IsSurfaceStyleEntity(value) &&
+            TryReadNumber(ReadMember(value, "EntityLabel"), out var label))
+        {
+            return (int)label;
+        }
+
+        foreach (var memberName in traversedMembers)
+        {
+            var memberValue = ReadMember(value, memberName);
+            if (memberValue != null)
+            {
+                pending.Enqueue((memberValue, depth + 1));
+            }
+        }
+    }
+
+    return 0;
+}
+
+static bool IsSurfaceStyleEntity(object value)
+{
+    var valueType = value.GetType();
+    return valueType.Name.Equals("IfcSurfaceStyle", StringComparison.OrdinalIgnoreCase) ||
+           valueType.GetInterfaces().Any(interfaceType =>
+               interfaceType.Name.Equals(
+                   "IIfcSurfaceStyle",
+                   StringComparison.OrdinalIgnoreCase));
+}
+
 static StyleRecord ExtractStyle(IfcStore model, int styleLabel)
 {
     var defaultStyle = new StyleRecord(
@@ -591,6 +814,23 @@ static StyleRecord ExtractStyle(IfcStore model, int styleLabel)
         if (TryReadColour(ReadMember(styleItem, "SurfaceColour"), out var diffuse))
         {
             style = style with { Diffuse = diffuse };
+        }
+
+        var diffuseValue = ReadMember(styleItem, "DiffuseColour");
+        if (TryReadColour(diffuseValue, out var renderedDiffuse))
+        {
+            style = style with { Diffuse = renderedDiffuse };
+        }
+        else if (TryReadNumber(diffuseValue, out var diffuseFactor))
+        {
+            var factor = Clamp01(diffuseFactor);
+            style = style with
+            {
+                Diffuse = new Colour(
+                    style.Diffuse.R * factor,
+                    style.Diffuse.G * factor,
+                    style.Diffuse.B * factor)
+            };
         }
 
         if (TryReadNumber(ReadMember(styleItem, "Transparency"), out var transparency))
@@ -821,6 +1061,10 @@ static float Clamp01(double value)
 {
     return (float)Math.Clamp(value, 0d, 1d);
 }
+
+internal readonly record struct ShapeExport(
+    XbimShapeInstance Shape,
+    int StyleLabel);
 
 internal sealed record HierarchyNode(
     int Label,

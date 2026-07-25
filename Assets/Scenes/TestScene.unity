@@ -1163,7 +1163,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::XbimIfcLoader
   modelParent: {fileID: 0}
   defaultMaterial: {fileID: 0}
-  generateMeshColliders: 0
+  generateMeshColliders: 1
+  linearDeflectionMillimetres: 30
+  angularDeflectionDegrees: 60
   meshesPerFrame: 16
 --- !u!4 &1029702757
 Transform:
