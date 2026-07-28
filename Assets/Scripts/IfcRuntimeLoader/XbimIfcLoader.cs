@@ -52,6 +52,14 @@ public sealed class XbimIfcLoader : MonoBehaviour
     public event Action<GameObject> LoadCompleted;
     public event Action<string> LoadFailed;
 
+    private void Awake()
+    {
+        if (!TryGetComponent<IfcGeoPositionExtractor>(out _))
+        {
+            gameObject.AddComponent<IfcGeoPositionExtractor>();
+        }
+    }
+
     public void LoadIFC(string path)
     {
         if (IsLoading)

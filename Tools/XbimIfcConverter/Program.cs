@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Globalization;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Xbim.Common.Configuration;
 using Xbim.Common.Geometry;
 using Xbim.Common.XbimExtensions;
@@ -93,7 +94,21 @@ try
         .Select(export => export.Shape.IfcProductLabel)
         .ToHashSet();
 
-    var hierarchy = BuildHierarchy(model, productLabels);
+    var hasOrigin = TryFindLocalOrigin(context, shapeExports, out var origin);
+    ProjectedGeoReference? projectedGeoReference =
+        hasOrigin &&
+        TryCreateProjectedGeoReference(
+            model,
+            origin,
+            metresPerUnit,
+            out var resolvedGeoReference)
+            ? resolvedGeoReference
+            : null;
+    var hierarchy = BuildHierarchy(
+        model,
+        productLabels,
+        metresPerUnit,
+        projectedGeoReference);
     var styleLabels = shapeExports
         .Select(export => export.StyleLabel)
         .Append(0)
@@ -110,11 +125,9 @@ try
     writer.Write(Magic);
     writer.Write(FormatVersion);
     writer.Write(metresPerUnit);
-
-    var originPosition = output.Position;
-    writer.Write(0d);
-    writer.Write(0d);
-    writer.Write(0d);
+    writer.Write(origin.X);
+    writer.Write(origin.Y);
+    writer.Write(origin.Z);
 
     writer.Write(styles.Count);
     foreach (var style in styles)
@@ -152,8 +165,6 @@ try
     writer.Write(0);
 
     var meshCount = 0;
-    var hasOrigin = false;
-    var origin = Vector3d.Zero;
 
     foreach (var shapeExport in shapeExports)
     {
@@ -184,12 +195,6 @@ try
                 transformed.X,
                 transformed.Y,
                 transformed.Z);
-        }
-
-        if (!hasOrigin)
-        {
-            origin = transformedVertices[0];
-            hasOrigin = true;
         }
 
         for (var index = 0; index < transformedVertices.Length; index++)
@@ -260,10 +265,6 @@ try
 
     writer.Flush();
     var endPosition = output.Position;
-    output.Position = originPosition;
-    writer.Write(origin.X);
-    writer.Write(origin.Y);
-    writer.Write(origin.Z);
     output.Position = meshCountPosition;
     writer.Write(meshCount);
     output.Position = endPosition;
@@ -281,9 +282,436 @@ catch (Exception exception)
     return 1;
 }
 
+static bool TryFindLocalOrigin(
+    Xbim3DModelContext context,
+    IReadOnlyList<ShapeExport> shapeExports,
+    out Vector3d origin)
+{
+    foreach (var shapeExport in shapeExports)
+    {
+        var geometry = context.ShapeGeometry(shapeExport.Shape);
+        var shapeData = ((IXbimShapeGeometryData)geometry).ShapeData;
+        if (shapeData is not { Length: > 0 })
+        {
+            continue;
+        }
+
+        using var shapeStream = new MemoryStream(shapeData, writable: false);
+        using var shapeReader = new BinaryReader(shapeStream);
+        var vertices = shapeReader
+            .ReadShapeTriangulation()
+            .Vertices
+            .ToList();
+        if (vertices.Count == 0)
+        {
+            continue;
+        }
+
+        var firstVertex = vertices[0];
+        var transformed = shapeExport.Shape.Transformation.Transform(firstVertex);
+        origin = new Vector3d(transformed.X, transformed.Y, transformed.Z);
+        return true;
+    }
+
+    origin = Vector3d.Zero;
+    return false;
+}
+
+static bool TryCreateProjectedGeoReference(
+    IfcStore model,
+    Vector3d localOrigin,
+    double metresPerUnit,
+    out ProjectedGeoReference geoReference)
+{
+    geoReference = default;
+    var mapConversion = model.Instances.FirstOrDefault(
+        entity => entity.GetType().Name.Contains(
+            "IfcMapConversion",
+            StringComparison.OrdinalIgnoreCase));
+    if (mapConversion == null)
+    {
+        Console.Error.WriteLine("IFC model does not expose an IfcMapConversion entity.");
+        return false;
+    }
+
+    if (!TryReadNumber(ReadMember(mapConversion, "Eastings"), out var eastings) ||
+        !TryReadNumber(ReadMember(mapConversion, "Northings"), out var northings))
+    {
+        Console.Error.WriteLine(
+            $"IfcMapConversion #{mapConversion.EntityLabel} has invalid Eastings or Northings.");
+        return false;
+    }
+
+    var targetCrs = ReadMember(mapConversion, "TargetCRS");
+    var projectedCrs = ReadText(targetCrs, "Name");
+    if (string.IsNullOrWhiteSpace(projectedCrs))
+    {
+        Console.Error.WriteLine(
+            $"IfcMapConversion #{mapConversion.EntityLabel} has no projected CRS name.");
+        return false;
+    }
+
+    var orthogonalHeight = ReadOptionalNumber(
+        mapConversion,
+        "OrthogonalHeight",
+        0d);
+    var xAxisAbscissa = ReadOptionalNumber(
+        mapConversion,
+        "XAxisAbscissa",
+        1d);
+    var xAxisOrdinate = ReadOptionalNumber(
+        mapConversion,
+        "XAxisOrdinate",
+        0d);
+    var scale = ReadOptionalNumber(mapConversion, "Scale", 1d);
+    var axisLength = Math.Sqrt(
+        xAxisAbscissa * xAxisAbscissa +
+        xAxisOrdinate * xAxisOrdinate);
+
+    if (!double.IsFinite(scale) ||
+        scale <= 0d ||
+        !double.IsFinite(axisLength) ||
+        axisLength <= 1e-12d)
+    {
+        return false;
+    }
+
+    xAxisAbscissa /= axisLength;
+    xAxisOrdinate /= axisLength;
+
+    var localX = localOrigin.X * metresPerUnit;
+    var localY = localOrigin.Y * metresPerUnit;
+    var easting =
+        eastings +
+        scale * (xAxisAbscissa * localX - xAxisOrdinate * localY);
+    var northing =
+        northings +
+        scale * (xAxisOrdinate * localX + xAxisAbscissa * localY);
+    var elevation =
+        orthogonalHeight +
+        scale * localOrigin.Z * metresPerUnit;
+
+    if (!TryConvertProjectedToWgs84(
+            projectedCrs,
+            easting,
+            northing,
+            out var latitude,
+            out var longitude))
+    {
+        Console.Error.WriteLine(
+            $"Unsupported IFC projected CRS '{projectedCrs}'. " +
+            "RefLatitude and RefLongitude will be used when available.");
+        return false;
+    }
+
+    geoReference = new ProjectedGeoReference(
+        projectedCrs,
+        easting,
+        northing,
+        elevation,
+        latitude,
+        longitude,
+        xAxisAbscissa,
+        xAxisOrdinate,
+        scale);
+    return true;
+}
+
+static double ReadOptionalNumber(
+    object instance,
+    string memberName,
+    double fallback)
+{
+    return TryReadNumber(ReadMember(instance, memberName), out var value)
+        ? value
+        : fallback;
+}
+
+static bool TryConvertProjectedToWgs84(
+    string projectedCrs,
+    double easting,
+    double northing,
+    out double latitude,
+    out double longitude)
+{
+    latitude = 0d;
+    longitude = 0d;
+    if (!projectedCrs.Contains(
+            "VN2000",
+            StringComparison.OrdinalIgnoreCase) &&
+        !projectedCrs.Contains(
+            "VN-2000",
+            StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    var centralMeridian = 0d;
+    var scaleFactor = 0d;
+    var utmMatch = Regex.Match(
+        projectedCrs,
+        @"UTM[^0-9]*(?<zone>[0-9]{1,2})",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    if (utmMatch.Success &&
+        int.TryParse(
+            utmMatch.Groups["zone"].Value,
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out var zone) &&
+        zone is >= 1 and <= 60)
+    {
+        centralMeridian = zone * 6d - 183d;
+        scaleFactor = 0.9996d;
+    }
+    else
+    {
+        // Autodesk's VN2000_*d* names use Vietnam's 3-degree TM grid.
+        var meridianMatch = Regex.Match(
+            projectedCrs,
+            @"(?<degrees>[0-9]{3})[dD](?<minutes>[0-9]{2})",
+            RegexOptions.CultureInvariant);
+        if (!meridianMatch.Success ||
+            !double.TryParse(
+                meridianMatch.Groups["degrees"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var degrees) ||
+            !double.TryParse(
+                meridianMatch.Groups["minutes"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var minutes) ||
+            minutes >= 60d)
+        {
+            return false;
+        }
+
+        centralMeridian = degrees + minutes / 60d;
+        scaleFactor = 0.9999d;
+    }
+
+    InverseTransverseMercator(
+        easting,
+        northing,
+        centralMeridian,
+        scaleFactor,
+        500_000d,
+        0d,
+        out latitude,
+        out longitude);
+    TransformVn2000ToWgs84(ref latitude, ref longitude);
+
+    return double.IsFinite(latitude) &&
+           double.IsFinite(longitude) &&
+           latitude is >= -90d and <= 90d &&
+           longitude is >= -180d and <= 180d;
+}
+
+static void InverseTransverseMercator(
+    double easting,
+    double northing,
+    double centralMeridianDegrees,
+    double scaleFactor,
+    double falseEasting,
+    double falseNorthing,
+    out double latitudeDegrees,
+    out double longitudeDegrees)
+{
+    const double semiMajorAxis = 6_378_137d;
+    const double inverseFlattening = 298.257_223_563d;
+    var flattening = 1d / inverseFlattening;
+    var eccentricitySquared = flattening * (2d - flattening);
+    var secondEccentricitySquared =
+        eccentricitySquared / (1d - eccentricitySquared);
+    var eccentricityFourth = eccentricitySquared * eccentricitySquared;
+    var eccentricitySixth = eccentricityFourth * eccentricitySquared;
+
+    var meridionalArc = (northing - falseNorthing) / scaleFactor;
+    var mu = meridionalArc /
+             (semiMajorAxis *
+              (1d -
+               eccentricitySquared / 4d -
+               3d * eccentricityFourth / 64d -
+               5d * eccentricitySixth / 256d));
+    var e1 =
+        (1d - Math.Sqrt(1d - eccentricitySquared)) /
+        (1d + Math.Sqrt(1d - eccentricitySquared));
+    var e1Squared = e1 * e1;
+    var e1Cubed = e1Squared * e1;
+    var e1Fourth = e1Squared * e1Squared;
+    var footprintLatitude =
+        mu +
+        (3d * e1 / 2d - 27d * e1Cubed / 32d) * Math.Sin(2d * mu) +
+        (21d * e1Squared / 16d - 55d * e1Fourth / 32d) * Math.Sin(4d * mu) +
+        151d * e1Cubed / 96d * Math.Sin(6d * mu) +
+        1_097d * e1Fourth / 512d * Math.Sin(8d * mu);
+
+    var sine = Math.Sin(footprintLatitude);
+    var cosine = Math.Cos(footprintLatitude);
+    var tangent = Math.Tan(footprintLatitude);
+    var tangentSquared = tangent * tangent;
+    var c1 = secondEccentricitySquared * cosine * cosine;
+    var n1 = semiMajorAxis /
+             Math.Sqrt(1d - eccentricitySquared * sine * sine);
+    var r1 =
+        semiMajorAxis * (1d - eccentricitySquared) /
+        Math.Pow(1d - eccentricitySquared * sine * sine, 1.5d);
+    var d = (easting - falseEasting) / (n1 * scaleFactor);
+    var d2 = d * d;
+    var d3 = d2 * d;
+    var d4 = d2 * d2;
+    var d5 = d4 * d;
+    var d6 = d3 * d3;
+
+    var latitude =
+        footprintLatitude -
+        n1 * tangent / r1 *
+        (d2 / 2d -
+         (5d + 3d * tangentSquared + 10d * c1 -
+          4d * c1 * c1 - 9d * secondEccentricitySquared) *
+         d4 / 24d +
+         (61d + 90d * tangentSquared +
+          298d * c1 + 45d * tangentSquared * tangentSquared -
+          252d * secondEccentricitySquared -
+          3d * c1 * c1) *
+         d6 / 720d);
+    var longitude =
+        centralMeridianDegrees * Math.PI / 180d +
+        (d -
+         (1d + 2d * tangentSquared + c1) * d3 / 6d +
+         (5d - 2d * c1 + 28d * tangentSquared -
+          3d * c1 * c1 +
+          8d * secondEccentricitySquared +
+          24d * tangentSquared * tangentSquared) *
+         d5 / 120d) /
+        cosine;
+
+    latitudeDegrees = latitude * 180d / Math.PI;
+    longitudeDegrees = longitude * 180d / Math.PI;
+}
+
+static void TransformVn2000ToWgs84(
+    ref double latitudeDegrees,
+    ref double longitudeDegrees)
+{
+    // EPSG:6960, using the coordinate-frame rotation convention.
+    const double semiMajorAxis = 6_378_137d;
+    const double inverseFlattening = 298.257_223_563d;
+    const double translationX = -191.904_414_29d;
+    const double translationY = -39.303_182_79d;
+    const double translationZ = -111.450_328_35d;
+    const double rotationXArcSeconds = -0.009_288_36d;
+    const double rotationYArcSeconds = 0.019_754_79d;
+    const double rotationZArcSeconds = -0.004_273_72d;
+    const double scalePartsPerMillion = 0.252_906_278d;
+
+    GeodeticToEcef(
+        latitudeDegrees,
+        longitudeDegrees,
+        0d,
+        semiMajorAxis,
+        inverseFlattening,
+        out var sourceX,
+        out var sourceY,
+        out var sourceZ);
+
+    var arcSecondsToRadians = Math.PI / (180d * 3_600d);
+    var rotationX = rotationXArcSeconds * arcSecondsToRadians;
+    var rotationY = rotationYArcSeconds * arcSecondsToRadians;
+    var rotationZ = rotationZArcSeconds * arcSecondsToRadians;
+    var scale = 1d + scalePartsPerMillion * 1e-6d;
+
+    var targetX =
+        translationX +
+        scale * (sourceX + rotationZ * sourceY - rotationY * sourceZ);
+    var targetY =
+        translationY +
+        scale * (-rotationZ * sourceX + sourceY + rotationX * sourceZ);
+    var targetZ =
+        translationZ +
+        scale * (rotationY * sourceX - rotationX * sourceY + sourceZ);
+
+    EcefToGeodetic(
+        targetX,
+        targetY,
+        targetZ,
+        semiMajorAxis,
+        inverseFlattening,
+        out latitudeDegrees,
+        out longitudeDegrees);
+}
+
+static void GeodeticToEcef(
+    double latitudeDegrees,
+    double longitudeDegrees,
+    double height,
+    double semiMajorAxis,
+    double inverseFlattening,
+    out double x,
+    out double y,
+    out double z)
+{
+    var flattening = 1d / inverseFlattening;
+    var eccentricitySquared = flattening * (2d - flattening);
+    var latitude = latitudeDegrees * Math.PI / 180d;
+    var longitude = longitudeDegrees * Math.PI / 180d;
+    var sineLatitude = Math.Sin(latitude);
+    var primeVerticalRadius =
+        semiMajorAxis /
+        Math.Sqrt(1d - eccentricitySquared * sineLatitude * sineLatitude);
+
+    x = (primeVerticalRadius + height) *
+        Math.Cos(latitude) *
+        Math.Cos(longitude);
+    y = (primeVerticalRadius + height) *
+        Math.Cos(latitude) *
+        Math.Sin(longitude);
+    z = (primeVerticalRadius * (1d - eccentricitySquared) + height) *
+        sineLatitude;
+}
+
+static void EcefToGeodetic(
+    double x,
+    double y,
+    double z,
+    double semiMajorAxis,
+    double inverseFlattening,
+    out double latitudeDegrees,
+    out double longitudeDegrees)
+{
+    var flattening = 1d / inverseFlattening;
+    var eccentricitySquared = flattening * (2d - flattening);
+    var longitude = Math.Atan2(y, x);
+    var horizontal = Math.Sqrt(x * x + y * y);
+    var latitude = Math.Atan2(
+        z,
+        horizontal * (1d - eccentricitySquared));
+
+    for (var iteration = 0; iteration < 8; iteration++)
+    {
+        var sine = Math.Sin(latitude);
+        var primeVerticalRadius =
+            semiMajorAxis /
+            Math.Sqrt(1d - eccentricitySquared * sine * sine);
+        var height = horizontal / Math.Cos(latitude) - primeVerticalRadius;
+        latitude = Math.Atan2(
+            z,
+            horizontal *
+            (1d -
+             eccentricitySquared *
+             primeVerticalRadius /
+             (primeVerticalRadius + height)));
+    }
+
+    latitudeDegrees = latitude * 180d / Math.PI;
+    longitudeDegrees = longitude * 180d / Math.PI;
+}
+
 static List<HierarchyNode> BuildHierarchy(
     IfcStore model,
-    IReadOnlySet<int> productLabels)
+    IReadOnlySet<int> productLabels,
+    double metresPerUnit,
+    ProjectedGeoReference? projectedGeoReference)
 {
     var definitions = model.Instances
         .OfType<IIfcObjectDefinition>()
@@ -373,7 +801,9 @@ static List<HierarchyNode> BuildHierarchy(
                 ExtractMetadata(
                     definition,
                     directPropertySets.GetValueOrDefault(label),
-                    typePropertySets.GetValueOrDefault(label)));
+                    typePropertySets.GetValueOrDefault(label),
+                    metresPerUnit,
+                    projectedGeoReference));
         })
         .ToList();
 }
@@ -441,13 +871,72 @@ static void AddPropertySet(
 static List<KeyValuePair<string, string>> ExtractMetadata(
     IIfcObjectDefinition definition,
     IEnumerable<IIfcPropertySet>? directPropertySets,
-    IEnumerable<IIfcPropertySet>? typePropertySets)
+    IEnumerable<IIfcPropertySet>? typePropertySets,
+    double metresPerUnit,
+    ProjectedGeoReference? projectedGeoReference)
 {
     var values = new Dictionary<string, string>(StringComparer.Ordinal);
     AddMetadata(values, "Name", ReadText(definition, "Name"));
     AddMetadata(values, "Description", ReadText(definition, "Description"));
     AddMetadata(values, "Object Type", ReadText(definition, "ObjectType"));
     AddMetadata(values, "Tag", ReadText(definition, "Tag"));
+
+    if (definition.GetType().Name.Contains("IfcSite", StringComparison.OrdinalIgnoreCase))
+    {
+        AddMetadata(
+            values,
+            "RefLatitude",
+            FormatIfcValue(ReadMember(definition, "RefLatitude")));
+        AddMetadata(
+            values,
+            "RefLongitude",
+            FormatIfcValue(ReadMember(definition, "RefLongitude")));
+
+        if (TryReadNumber(ReadMember(definition, "RefElevation"), out var elevation))
+        {
+            AddMetadata(
+                values,
+                "RefElevation",
+                (elevation * metresPerUnit).ToString("R", CultureInfo.InvariantCulture));
+        }
+
+        if (projectedGeoReference is { } mapReference)
+        {
+            AddMetadata(
+                values,
+                "MapConversion/OriginLatitude",
+                mapReference.Latitude.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/OriginLongitude",
+                mapReference.Longitude.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/OriginElevation",
+                mapReference.Elevation.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(values, "MapConversion/ProjectedCRS", mapReference.ProjectedCrs);
+            AddMetadata(
+                values,
+                "MapConversion/OriginEasting",
+                mapReference.Easting.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/OriginNorthing",
+                mapReference.Northing.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/XAxisAbscissa",
+                mapReference.XAxisAbscissa.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/XAxisOrdinate",
+                mapReference.XAxisOrdinate.ToString("R", CultureInfo.InvariantCulture));
+            AddMetadata(
+                values,
+                "MapConversion/Scale",
+                mapReference.Scale.ToString("R", CultureInfo.InvariantCulture));
+        }
+    }
 
     AppendPropertySets(values, directPropertySets, "Property");
     AppendPropertySets(values, typePropertySets, "Type Property");
@@ -1065,6 +1554,17 @@ static float Clamp01(double value)
 internal readonly record struct ShapeExport(
     XbimShapeInstance Shape,
     int StyleLabel);
+
+internal readonly record struct ProjectedGeoReference(
+    string ProjectedCrs,
+    double Easting,
+    double Northing,
+    double Elevation,
+    double Latitude,
+    double Longitude,
+    double XAxisAbscissa,
+    double XAxisOrdinate,
+    double Scale);
 
 internal sealed record HierarchyNode(
     int Label,
