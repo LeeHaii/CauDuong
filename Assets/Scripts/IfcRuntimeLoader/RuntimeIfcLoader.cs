@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using TMPro;
 using UnityEngine;
@@ -36,16 +38,14 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
 
     public void BrowseIFC()
     {
-#if UNITY_EDITOR_WIN
-        var path = UnityEditor.EditorUtility.OpenFilePanel("Open IFC Model", string.Empty, "ifc");
-#elif UNITY_STANDALONE_WIN
-        var path = WindowsFileDialog.OpenIfcFile();
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        var paths = WindowsFileDialog.OpenIfcFiles();
 #else
         SetStatus("Runtime IFC import is currently supported on Windows only.");
         return;
 #endif
 
-        if (!string.IsNullOrWhiteSpace(path))
+        foreach (var path in paths)
         {
             LoadIFC(path);
         }
@@ -72,7 +72,7 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
         Debug.Log(message);
     }
 
-#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
     private static class WindowsFileDialog
     {
         private const int MaxPathCharacters = 4096;
@@ -80,6 +80,7 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
         private const int PathMustExist = 0x00000800;
         private const int ExplorerStyle = 0x00080000;
         private const int DoNotChangeDirectory = 0x00000008;
+        private const int AllowMultiSelect = 0x00000200;
 
         [DllImport(
             "comdlg32.dll",
@@ -89,7 +90,7 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetOpenFileName(ref OpenFileNameData data);
 
-        public static string OpenIfcFile()
+        public static IReadOnlyList<string> OpenIfcFiles()
         {
             var fileBuffer = Marshal.AllocHGlobal(MaxPathCharacters * sizeof(char));
             var filter = Marshal.StringToHGlobalUni(
@@ -108,12 +109,32 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
                     file = fileBuffer,
                     maxFile = MaxPathCharacters,
                     title = title,
-                    flags = FileMustExist | PathMustExist | ExplorerStyle | DoNotChangeDirectory
+                    flags = FileMustExist |
+                            PathMustExist |
+                            ExplorerStyle |
+                            DoNotChangeDirectory |
+                            AllowMultiSelect
                 };
 
-                return GetOpenFileName(ref data)
-                    ? Marshal.PtrToStringUni(fileBuffer)
-                    : null;
+                if (!GetOpenFileName(ref data))
+                {
+                    return Array.Empty<string>();
+                }
+
+                var parts = ReadMultiString(fileBuffer);
+                if (parts.Length <= 1)
+                {
+                    return parts;
+                }
+
+                var directory = parts[0];
+                var paths = new string[parts.Length - 1];
+                for (var index = 1; index < parts.Length; index++)
+                {
+                    paths[index - 1] = Path.Combine(directory, parts[index]);
+                }
+
+                return paths;
             }
             finally
             {
@@ -121,6 +142,34 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
                 Marshal.FreeHGlobal(filter);
                 Marshal.FreeHGlobal(fileBuffer);
             }
+        }
+
+        private static string[] ReadMultiString(IntPtr buffer)
+        {
+            var values = new List<string>();
+            var current = new System.Text.StringBuilder();
+
+            for (var index = 0; index < MaxPathCharacters; index++)
+            {
+                var character = (char)Marshal.ReadInt16(
+                    buffer,
+                    index * sizeof(char));
+                if (character != '\0')
+                {
+                    current.Append(character);
+                    continue;
+                }
+
+                if (current.Length == 0)
+                {
+                    break;
+                }
+
+                values.Add(current.ToString());
+                current.Clear();
+            }
+
+            return values.ToArray();
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

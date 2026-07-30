@@ -31,11 +31,18 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [Min(1)]
     [SerializeField] private int meshesPerFrame = 16;
 
-    private readonly Dictionary<int, Material> materialCache = new();
+    private readonly List<GameObject> loadedModels = new();
+    private readonly Dictionary<GameObject, List<Material>> modelMaterials = new();
+    private readonly Dictionary<GameObject, string> modelSourcePaths = new();
+    private readonly Queue<string> pendingImports = new();
+    private Dictionary<int, Material> activeMaterialCache = new();
     private GameObject loadedModel;
+    private GameObject importingModel;
     private Coroutine loadRoutine;
 
     public bool IsLoading { get; private set; }
+    public GameObject LoadedModel => loadedModel;
+    public IReadOnlyList<GameObject> LoadedModels => loadedModels;
     public float LinearDeflection
     {
         get => linearDeflectionMillimetres;
@@ -51,6 +58,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
     public event Action<string> StatusChanged;
     public event Action<GameObject> LoadCompleted;
     public event Action<string> LoadFailed;
+    public event Action ModelsChanged;
 
     private void Awake()
     {
@@ -62,13 +70,48 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
     public void LoadIFC(string path)
     {
-        if (IsLoading)
+        if (IsLoading || loadRoutine != null)
         {
-            Debug.LogWarning("An IFC import is already running.");
+            pendingImports.Enqueue(path);
+            SetStatus($"Queued IFC import: {Path.GetFileName(path)}");
             return;
         }
 
         loadRoutine = StartCoroutine(LoadIfcRoutine(path));
+    }
+
+    public string GetModelSourcePath(GameObject model)
+    {
+        return model != null && modelSourcePaths.TryGetValue(model, out var path)
+            ? path
+            : string.Empty;
+    }
+
+    public void RemoveModel(GameObject model)
+    {
+        if (model == null || model == importingModel || !loadedModels.Remove(model))
+        {
+            return;
+        }
+
+        modelSourcePaths.Remove(model);
+        DestroyModelResources(model);
+        loadedModel = loadedModels.Count > 0 ? loadedModels[^1] : null;
+        ModelsChanged?.Invoke();
+    }
+
+    public void ClearModels()
+    {
+        for (var index = loadedModels.Count - 1; index >= 0; index--)
+        {
+            var model = loadedModels[index];
+            modelSourcePaths.Remove(model);
+            DestroyModelResources(model);
+        }
+
+        loadedModels.Clear();
+        loadedModel = null;
+        ModelsChanged?.Invoke();
     }
 
     private IEnumerator LoadIfcRoutine(string path)
@@ -151,7 +194,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         try
         {
-            importRoutine = ImportMeshFile(meshPath, Path.GetFileNameWithoutExtension(path));
+            importRoutine = ImportMeshFile(
+                meshPath,
+                Path.GetFileNameWithoutExtension(path),
+                path);
         }
         catch (Exception exception)
         {
@@ -192,8 +238,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         IsLoading = false;
         loadRoutine = null;
+        loadedModels.Add(loadedModel);
+        modelSourcePaths[loadedModel] = path;
+        importingModel = null;
         SetStatus("IFC import complete.");
         LoadCompleted?.Invoke(loadedModel);
+        ModelsChanged?.Invoke();
+        StartNextQueuedImport();
     }
 
     private static bool IsFileReady(string path)
@@ -218,7 +269,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
     }
 
-    private IEnumerator ImportMeshFile(string path, string modelName)
+    private IEnumerator ImportMeshFile(
+        string path,
+        string modelName,
+        string sourcePath)
     {
         using var stream = File.OpenRead(path);
         using var reader = new BinaryReader(stream, Encoding.UTF8);
@@ -250,14 +304,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
         var meshCount = reader.ReadInt32();
         ValidateRecordCount(meshCount, "mesh");
 
-        if (loadedModel != null)
-        {
-            Destroy(loadedModel);
-        }
-
-        DestroyRuntimeMaterials();
-
         loadedModel = new GameObject(modelName);
+        importingModel = loadedModel;
+        activeMaterialCache = new Dictionary<int, Material>();
+        modelMaterials[loadedModel] = new List<Material>();
+        modelSourcePaths[loadedModel] = sourcePath;
         if (modelParent != null)
         {
             loadedModel.transform.SetParent(modelParent, false);
@@ -538,7 +589,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
     private Material GetMaterial(IfcMaterialStyle style)
     {
-        if (materialCache.TryGetValue(style.Label, out var cached))
+        if (activeMaterialCache.TryGetValue(style.Label, out var cached))
         {
             return cached;
         }
@@ -575,7 +626,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
         SetFloatIfPresent(material, "_DoubleSidedEnable", 1f);
 
         ConfigureTransparency(material, style.Diffuse.a);
-        materialCache[style.Label] = material;
+        activeMaterialCache[style.Label] = material;
+        if (importingModel != null &&
+            modelMaterials.TryGetValue(importingModel, out var materials))
+        {
+            materials.Add(material);
+        }
+
         return material;
     }
 
@@ -637,22 +694,48 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
     }
 
-    private void DestroyRuntimeMaterials()
+    private void DestroyModelResources(GameObject model)
     {
-        foreach (var material in materialCache.Values)
+        if (model == null)
         {
-            if (material != null)
+            return;
+        }
+
+        foreach (var meshFilter in model.GetComponentsInChildren<MeshFilter>(true))
+        {
+            if (meshFilter.sharedMesh != null)
             {
-                Destroy(material);
+                Destroy(meshFilter.sharedMesh);
             }
         }
 
-        materialCache.Clear();
+        if (modelMaterials.Remove(model, out var materials))
+        {
+            foreach (var material in materials)
+            {
+                if (material != null)
+                {
+                    Destroy(material);
+                }
+            }
+        }
+
+        Destroy(model);
     }
 
     private void OnDestroy()
     {
-        DestroyRuntimeMaterials();
+        if (importingModel != null && !loadedModels.Contains(importingModel))
+        {
+            DestroyModelResources(importingModel);
+        }
+
+        for (var index = loadedModels.Count - 1; index >= 0; index--)
+        {
+            DestroyModelResources(loadedModels[index]);
+        }
+
+        loadedModels.Clear();
     }
 
     private static string GetConverterPath()
@@ -740,11 +823,30 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
     private void Fail(string message)
     {
+        if (importingModel != null)
+        {
+            modelSourcePaths.Remove(importingModel);
+            DestroyModelResources(importingModel);
+            importingModel = null;
+            loadedModel = loadedModels.Count > 0 ? loadedModels[^1] : null;
+        }
+
         IsLoading = false;
         loadRoutine = null;
         Debug.LogError(message);
         SetStatus(message);
         LoadFailed?.Invoke(message);
+        StartNextQueuedImport();
+    }
+
+    private void StartNextQueuedImport()
+    {
+        if (loadRoutine != null || IsLoading || pendingImports.Count == 0)
+        {
+            return;
+        }
+
+        loadRoutine = StartCoroutine(LoadIfcRoutine(pendingImports.Dequeue()));
     }
 
     private void SetStatus(string message)

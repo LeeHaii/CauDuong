@@ -1157,6 +1157,9 @@ GameObject:
   - component: {fileID: 1029702755}
   - component: {fileID: 1029702758}
   - component: {fileID: 1029702759}
+  - component: {fileID: 1029702761}
+  - component: {fileID: 1029702760}
+  - component: {fileID: 1029702762}
   m_Layer: 0
   m_Name: IFC Runtime Loader
   m_TagString: Untagged
@@ -1243,15 +1246,82 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::OsmMapLoader
   geoPositionExtractor: {fileID: 0}
+  viewingCamera: {fileID: 0}
   tileUrlTemplate: https://tile.openstreetmap.org/{z}/{x}/{y}.png
   userAgent: CauDuong-IFC-Viewer/1.0
   preferredZoom: 18
   minimumZoom: 12
-  paddingTiles: 1
-  maxTilesPerAxis: 9
-  maxTotalTiles: 49
+  rootTileRadius: 1
+  splitThresholdPixels: 520
+  mergeThresholdPixels: 300
+  maxResidentTiles: 192
+  evaluationInterval: 0.15
+  offscreenRetentionSeconds: 2
+  maxConcurrentRequests: 6
+  maxTextureFinalizationsPerFrame: 1
+  failedRequestRetrySeconds: 15
+  cacheFreshnessDays: 7
+  cacheRetentionDays: 30
   verticalOffsetMetres: -0.05
+  skirtDepthMetres: 0.25
   showAttribution: 0
+--- !u!114 &1029702760
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1029702754}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5b530a9afe984aa419e9e75b298a5b41, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::IfcOperationsDashboard
+  loader: {fileID: 0}
+  runtimeLoader: {fileID: 0}
+  loadDefaultModelsOnStart: 1
+  defaultModelLimit: 2
+  viewingCamera: {fileID: 0}
+  orbitCamera: {fileID: 0}
+  focusSelection: 1
+--- !u!114 &1029702761
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1029702754}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 19102, guid: 0000000000000000e000000000000000, type: 0}
+  m_Name: 
+  m_EditorClassIdentifier: UnityEngine.dll::UnityEngine.UIElements.UIDocument
+  m_PanelSettings: {fileID: 11400000, guid: 6691b7174f17c19409e0f425b15e7542, type: 2}
+  m_ParentUI: {fileID: 0}
+  sourceAsset: {fileID: 9197481963319205126, guid: 650d3adf61595d74c95076580e4dc20d, type: 3}
+  m_SortingOrder: 100
+  m_Position: 0
+  m_WorldSpaceSizeMode: 1
+  m_WorldSpaceWidth: 1920
+  m_WorldSpaceHeight: 1080
+  m_PivotReferenceSize: 0
+  m_Pivot: 0
+  m_WorldSpaceCollider: {fileID: 0}
+--- !u!114 &1029702762
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1029702754}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 69132c421e98746488ab8a5b6a2cac8e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::IfcMeasurementController
+  viewingCamera: {fileID: 0}
+  dashboardDocument: {fileID: 0}
+  measurementColor: {r: 0.08, g: 0.75, b: 1, a: 1}
 --- !u!1 &1171116991
 GameObject:
   m_ObjectHideFlags: 0
@@ -1731,7 +1801,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1947746608
 MonoBehaviour:
   m_ObjectHideFlags: 0

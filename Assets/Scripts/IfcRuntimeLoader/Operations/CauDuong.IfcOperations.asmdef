@@ -1,0 +1,14 @@
+{
+  "name": "CauDuong.IfcOperations",
+  "rootNamespace": "CauDuong.IfcOperations",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

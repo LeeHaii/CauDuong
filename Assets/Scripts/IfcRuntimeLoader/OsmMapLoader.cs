@@ -796,16 +796,23 @@ public sealed class OsmMapLoader : MonoBehaviour
 
     private void ReleaseVisual(TileVisual visual)
     {
-        if (visual == null)
+        if (visual == null || visual.GameObject == null)
         {
             return;
         }
 
-        visual.Renderer.enabled = false;
-        visual.Material.mainTexture = null;
-        if (visual.Material.HasProperty("_BaseMap"))
+        if (visual.Renderer != null)
         {
-            visual.Material.SetTexture("_BaseMap", null);
+            visual.Renderer.enabled = false;
+        }
+
+        if (visual.Material != null)
+        {
+            visual.Material.mainTexture = null;
+            if (visual.Material.HasProperty("_BaseMap"))
+            {
+                visual.Material.SetTexture("_BaseMap", null);
+            }
         }
 
         visual.GameObject.SetActive(false);

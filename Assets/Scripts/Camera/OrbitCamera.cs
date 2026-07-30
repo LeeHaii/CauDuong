@@ -137,7 +137,9 @@ public sealed class OrbitCamera : MonoBehaviour
         var pointerOverUi = EventSystem.current != null &&
                             EventSystem.current.IsPointerOverGameObject();
 
-        if (!pointerOverUi && Mouse.current.leftButton.isPressed)
+        if (!pointerOverUi &&
+            !IfcMeasurementController.IsCapturingInput &&
+            Mouse.current.leftButton.isPressed)
         {
             panDelta = Mouse.current.delta.ReadValue();
         }

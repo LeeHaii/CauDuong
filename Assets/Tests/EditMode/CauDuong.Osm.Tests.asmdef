@@ -2,7 +2,8 @@
   "name": "CauDuong.Osm.Tests",
   "rootNamespace": "",
   "references": [
-    "CauDuong.Osm"
+    "CauDuong.Osm",
+    "CauDuong.IfcOperations"
   ],
   "includePlatforms": [
     "Editor"
