@@ -179,7 +179,7 @@ Camera:
     width: 1
     height: 1
   near clip plane: 0.3
-  far clip plane: 10000
+  far clip plane: 30000
   field of view: 60
   orthographic: 0
   orthographic size: 5
@@ -273,7 +273,7 @@ MonoBehaviour:
   distance: 300
   minDistance: 1
   maxDistance: 5000
-  mouseZoomSpeed: 0.2
+  mouseZoomSpeed: 5
   mouseXSpeed: 0.2
   mouseYSpeed: 0.2
   mousePanSpeed: 1

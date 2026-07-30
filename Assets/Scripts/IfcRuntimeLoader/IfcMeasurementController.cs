@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using CauDuong.IfcOperations;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
@@ -33,6 +32,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
 
     public event Action<string> StatusChanged;
     public event Action<IfcMeasurementMode> ModeChanged;
+    public event Action<string, string, bool> HudChanged;
 
     private void Awake()
     {
@@ -84,12 +84,23 @@ public sealed class IfcMeasurementController : MonoBehaviour
         }
 
         var screenPosition = Mouse.current.position.ReadValue();
-        if (IsPointerOverDashboard(screenPosition) ||
-            !TryGetIfcPoint(screenPosition, out var point))
+        if (IfcUiHitTest.IsPointerOverInteractiveUi(dashboardDocument, screenPosition))
         {
             return;
         }
 
+        if (!IfcInteractionRaycaster.TryRaycast(
+                viewingCamera,
+                screenPosition,
+                out var hit,
+                out _))
+        {
+            StatusChanged?.Invoke(
+                "Không tìm thấy bề mặt IFC. Hãy nhấp trực tiếp lên mô hình.");
+            return;
+        }
+
+        var point = hit.point;
         AddPoint(point);
     }
 
@@ -110,6 +121,10 @@ public sealed class IfcMeasurementController : MonoBehaviour
                 "Đo diện tích: chọn ít nhất 3 điểm, nhấn chuột phải để hoàn tất.",
             _ => "Đã tắt công cụ đo."
         });
+        HudChanged?.Invoke(
+            GetModeTitle(mode),
+            GetModeInstruction(mode),
+            mode != IfcMeasurementMode.None);
     }
 
     public void Stop()
@@ -118,6 +133,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
         ActiveMode = IfcMeasurementMode.None;
         IsCapturingInput = false;
         ModeChanged?.Invoke(ActiveMode);
+        HudChanged?.Invoke(string.Empty, string.Empty, false);
     }
 
     public void ClearMeasurements()
@@ -133,14 +149,23 @@ public sealed class IfcMeasurementController : MonoBehaviour
 
         completedMeasurements.Clear();
         StatusChanged?.Invoke("Đã xóa tất cả phép đo 3D.");
+        HudChanged?.Invoke(string.Empty, string.Empty, false);
     }
 
     private void AddPoint(Vector3 point)
     {
-        EnsurePendingMeasurement();
+        EnsurePendingMeasurement(point);
         pendingPoints.Add(point);
         CreateMarker(point, pendingMeasurement.transform);
         UpdatePendingLine();
+
+        if (pendingPoints.Count == 1 &&
+            ActiveMode is IfcMeasurementMode.Distance or IfcMeasurementMode.Height)
+        {
+            var message = "Đã đặt điểm 1/2. Chọn điểm thứ hai.";
+            StatusChanged?.Invoke(message);
+            HudChanged?.Invoke(GetModeTitle(ActiveMode), message, true);
+        }
 
         if (ActiveMode == IfcMeasurementMode.Distance && pendingPoints.Count == 2)
         {
@@ -164,6 +189,10 @@ public sealed class IfcMeasurementController : MonoBehaviour
         {
             StatusChanged?.Invoke(
                 $"Đo diện tích: đã chọn {pendingPoints.Count} điểm.");
+            HudChanged?.Invoke(
+                GetModeTitle(ActiveMode),
+                $"Đã đặt {pendingPoints.Count} điểm. Chuột phải để hoàn tất.",
+                true);
         }
     }
 
@@ -171,6 +200,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
     {
         CompletePendingMeasurement();
         StatusChanged?.Invoke($"{label}: {value:N2} m");
+        HudChanged?.Invoke(label, $"{value:N2} m", true);
         StopWithoutDestroyingCompleted();
     }
 
@@ -186,6 +216,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
         var area = IfcMeasurementMath.PolygonArea(pendingPoints);
         CompletePendingMeasurement();
         StatusChanged?.Invoke($"Diện tích: {area:N2} m²");
+        HudChanged?.Invoke("Diện tích", $"{area:N2} m²", true);
         StopWithoutDestroyingCompleted();
     }
 
@@ -208,7 +239,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
         ModeChanged?.Invoke(ActiveMode);
     }
 
-    private void EnsurePendingMeasurement()
+    private void EnsurePendingMeasurement(Vector3 firstPoint)
     {
         if (pendingMeasurement != null)
         {
@@ -223,7 +254,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
         pendingLine.material = measurementMaterial;
         pendingLine.startColor = measurementColor;
         pendingLine.endColor = measurementColor;
-        pendingLine.widthMultiplier = GetMarkerScale() * 0.28f;
+        pendingLine.widthMultiplier = GetMarkerScale(firstPoint) * 0.28f;
         pendingLine.numCapVertices = 4;
         pendingLine.numCornerVertices = 3;
     }
@@ -243,7 +274,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
         marker.name = "Measurement Point";
         marker.transform.SetParent(parent, true);
         marker.transform.position = point;
-        marker.transform.localScale = Vector3.one * GetMarkerScale();
+        marker.transform.localScale = Vector3.one * GetMarkerScale(point);
 
         if (marker.TryGetComponent<Collider>(out var collider))
         {
@@ -256,65 +287,27 @@ public sealed class IfcMeasurementController : MonoBehaviour
         }
     }
 
-    private float GetMarkerScale()
+    private float GetMarkerScale(Vector3 point)
     {
         if (viewingCamera == null)
         {
             return 0.4f;
         }
 
-        return Mathf.Clamp(
-            Vector3.Distance(viewingCamera.transform.position, viewingCamera.transform.position +
-                viewingCamera.transform.forward * 10f) * 0.04f,
-            0.25f,
-            1.5f);
-    }
-
-    private bool TryGetIfcPoint(Vector2 screenPosition, out Vector3 point)
-    {
-        point = default;
-        viewingCamera ??= Camera.main;
-        if (viewingCamera == null)
+        var distance = Vector3.Distance(viewingCamera.transform.position, point);
+        if (viewingCamera.orthographic)
         {
-            return false;
+            return Mathf.Clamp(
+                viewingCamera.orthographicSize * 0.018f,
+                0.08f,
+                12f);
         }
 
-        var hits = Physics.RaycastAll(
-            viewingCamera.ScreenPointToRay(screenPosition),
-            viewingCamera.farClipPlane);
-        var nearestDistance = float.PositiveInfinity;
-        var found = false;
-
-        foreach (var hit in hits)
-        {
-            if (hit.distance >= nearestDistance ||
-                hit.transform.GetComponentInParent<IfcElementMetadata>() == null)
-            {
-                continue;
-            }
-
-            nearestDistance = hit.distance;
-            point = hit.point;
-            found = true;
-        }
-
-        return found;
-    }
-
-    private bool IsPointerOverDashboard(Vector2 screenPosition)
-    {
-        var dashboardRoot = dashboardDocument?.rootVisualElement;
-        if (dashboardRoot?.panel != null)
-        {
-            var panelPosition = RuntimePanelUtils.ScreenToPanel(
-                dashboardRoot.panel,
-                screenPosition);
-            var picked = dashboardRoot.panel.Pick(panelPosition);
-            return picked != null && picked != dashboardRoot;
-        }
-
-        return EventSystem.current != null &&
-               EventSystem.current.IsPointerOverGameObject();
+        var worldUnitsPerPixel =
+            2f * distance *
+            Mathf.Tan(viewingCamera.fieldOfView * 0.5f * Mathf.Deg2Rad) /
+            Mathf.Max(1f, Screen.height);
+        return Mathf.Clamp(worldUnitsPerPixel * 10f, 0.08f, 12f);
     }
 
     private void CancelPendingMeasurement()
@@ -326,6 +319,29 @@ public sealed class IfcMeasurementController : MonoBehaviour
             Destroy(pendingMeasurement);
             pendingMeasurement = null;
         }
+    }
+
+    private static string GetModeTitle(IfcMeasurementMode mode)
+    {
+        return mode switch
+        {
+            IfcMeasurementMode.Distance => "ĐO KHOẢNG CÁCH",
+            IfcMeasurementMode.Height => "ĐO CHIỀU CAO",
+            IfcMeasurementMode.Area => "ĐO DIỆN TÍCH",
+            _ => string.Empty
+        };
+    }
+
+    private static string GetModeInstruction(IfcMeasurementMode mode)
+    {
+        return mode switch
+        {
+            IfcMeasurementMode.Distance => "Chọn 2 điểm trên mô hình IFC.",
+            IfcMeasurementMode.Height => "Chọn điểm đáy và điểm đỉnh.",
+            IfcMeasurementMode.Area =>
+                "Chọn ít nhất 3 điểm, nhấn chuột phải để hoàn tất.",
+            _ => string.Empty
+        };
     }
 
     private Material CreateMeasurementMaterial()

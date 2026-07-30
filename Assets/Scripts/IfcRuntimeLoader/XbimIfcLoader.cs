@@ -238,6 +238,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         IsLoading = false;
         loadRoutine = null;
+        var lodController = loadedModel.GetComponent<IfcModelLodController>() ??
+                            loadedModel.AddComponent<IfcModelLodController>();
+        lodController.Rebuild();
         loadedModels.Add(loadedModel);
         modelSourcePaths[loadedModel] = path;
         importingModel = null;

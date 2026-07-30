@@ -511,6 +511,35 @@
     opacity: 1;
 }
 
+.measurement-hud {
+    position: absolute;
+    left: 50%;
+    bottom: 24px;
+    width: 320px;
+    margin-left: -160px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    background-color: rgba(16, 24, 40, 0.94);
+    border-width: 1px;
+    border-color: rgba(56, 189, 248, 0.7);
+    display: none;
+    align-items: center;
+}
+
+.measurement-hud-title {
+    color: rgb(56, 189, 248);
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.measurement-hud-value {
+    margin-top: 3px;
+    color: rgb(248, 250, 252);
+    font-size: 13px;
+    white-space: normal;
+    -unity-text-align: middle-center;
+}
+
 .toolbar-popup {
     position: absolute;
     top: 76px;

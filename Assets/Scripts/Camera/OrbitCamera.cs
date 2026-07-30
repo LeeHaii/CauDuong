@@ -31,6 +31,7 @@ public sealed class OrbitCamera : MonoBehaviour
     [Header("Rotation Limits")]
     [SerializeField, Range(0f, 90f)] private float minPitch = 0f;
     [SerializeField, Range(0f, 90f)] private float maxPitch = 90f;
+    [SerializeField] private UnityEngine.UIElements.UIDocument dashboardDocument;
 
     private Camera controlledCamera;
     private Button resetButton;
@@ -45,6 +46,10 @@ public sealed class OrbitCamera : MonoBehaviour
     private void Awake()
     {
         controlledCamera = GetComponent<Camera>();
+        var dashboard = FindFirstObjectByType<IfcOperationsDashboard>();
+        dashboardDocument ??= dashboard != null
+            ? dashboard.GetComponent<UnityEngine.UIElements.UIDocument>()
+            : null;
     }
 
     private void OnEnable()
@@ -134,17 +139,21 @@ public sealed class OrbitCamera : MonoBehaviour
             return;
         }
 
-        var pointerOverUi = EventSystem.current != null &&
-                            EventSystem.current.IsPointerOverGameObject();
+        var pointerOverUi = IfcUiHitTest.IsPointerOverInteractiveUi(
+            dashboardDocument,
+            Mouse.current.position.ReadValue());
+        var measurementActive = IfcMeasurementController.IsCapturingInput;
 
         if (!pointerOverUi &&
-            !IfcMeasurementController.IsCapturingInput &&
+            !measurementActive &&
             Mouse.current.leftButton.isPressed)
         {
             panDelta = Mouse.current.delta.ReadValue();
         }
 
-        if (!pointerOverUi && Mouse.current.rightButton.isPressed)
+        if (!pointerOverUi &&
+            !measurementActive &&
+            Mouse.current.rightButton.isPressed)
         {
             var delta = Mouse.current.delta.ReadValue();
             orbitDelta = new Vector2(
@@ -153,7 +162,7 @@ public sealed class OrbitCamera : MonoBehaviour
         }
 
         var scroll = Mouse.current.scroll.y.ReadValue();
-        if (scroll != 0f)
+        if (!pointerOverUi && scroll != 0f)
         {
             var scrollNotches = scroll / 120f;
             distance = Mathf.Clamp(

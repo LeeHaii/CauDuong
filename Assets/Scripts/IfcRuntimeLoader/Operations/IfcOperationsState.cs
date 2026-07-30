@@ -55,5 +55,20 @@ namespace CauDuong.IfcOperations
             maintenanceNote = note ?? string.Empty;
             updatedAt = updatedTime.ToString("dd/MM/yyyy HH:mm:ss");
         }
+
+        public void Restore(
+            IfcInfrastructureCategory restoredCategory,
+            IfcOperationalStatus restoredStatus,
+            string restoredOperationsGlobalId,
+            string restoredNote,
+            string restoredUpdatedAt)
+        {
+            category = restoredCategory;
+            status = restoredStatus;
+            operationsGlobalId = restoredOperationsGlobalId ?? string.Empty;
+            maintenanceNote = restoredNote ?? string.Empty;
+            updatedAt = restoredUpdatedAt ?? string.Empty;
+            initialized = true;
+        }
     }
 }

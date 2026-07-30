@@ -98,6 +98,11 @@
             <ui:Label name="import-status" text="Sẵn sàng." class="status-text" />
         </ui:VisualElement>
 
+        <ui:VisualElement name="measurement-hud" class="measurement-hud hud-interactive">
+            <ui:Label name="measurement-hud-title" text="ĐO ĐẠC 3D" class="measurement-hud-title" />
+            <ui:Label name="measurement-hud-value" text="Chọn điểm trên mô hình IFC." class="measurement-hud-value" />
+        </ui:VisualElement>
+
         <ui:VisualElement name="loading-overlay" class="loading-overlay hud-interactive">
             <ui:VisualElement name="loading-spinner" class="loading-spinner" />
             <ui:Label name="loading-message" text="Đang nạp dữ liệu IFC..." class="loading-message" />

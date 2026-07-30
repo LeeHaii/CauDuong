@@ -35,12 +35,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private readonly Dictionary<IfcInfrastructureCategory, bool> categoryVisibility = new();
     private readonly HashSet<IfcInfrastructureCategory> expandedCategories = new();
     private readonly Dictionary<int, Button> statusButtons = new();
+    private readonly Dictionary<IfcElementMetadata, VisualElement> assetRows = new();
 
     private UIDocument document;
     private VisualElement root;
     private VisualElement leftPanel;
     private VisualElement detailsPanel;
     private VisualElement categoryList;
+    private ScrollView categoryScroll;
     private VisualElement propertyList;
     private VisualElement modelManagerPopup;
     private VisualElement measurementPopup;
@@ -49,11 +51,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private VisualElement statusStrip;
     private VisualElement loadingOverlay;
     private VisualElement loadingSpinner;
+    private VisualElement measurementHud;
     private Label totalCountLabel;
     private Button layerCountButton;
     private Button measureButton;
     private Label importStatusLabel;
     private Label loadingMessage;
+    private Label measurementHudTitle;
+    private Label measurementHudValue;
     private Label detailTypeLabel;
     private Label detailNameLabel;
     private Label globalIdLabel;
@@ -65,6 +70,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private IfcAssetRecord selectedRecord;
     private IfcOperationalStatus? activeStatusFilter;
     private IfcMeasurementController measurementController;
+    private IfcOperationsDatabase operationsDatabase;
     private Coroutine toastRoutine;
     private Coroutine startupLoadRoutine;
     private Vector2 pointerDownPosition;
@@ -87,6 +93,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         document = GetComponent<UIDocument>();
         measurementController = GetComponent<IfcMeasurementController>() ??
                                 gameObject.AddComponent<IfcMeasurementController>();
+        operationsDatabase = GetComponent<IfcOperationsDatabase>() ??
+                             gameObject.AddComponent<IfcOperationsDatabase>();
         ResolveDependencies();
 
         foreach (var definition in IfcInfrastructureClassifier.Definitions)
@@ -177,8 +185,10 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
         measurementController.StatusChanged -= SetImportStatus;
         measurementController.ModeChanged -= HandleMeasurementModeChanged;
+        measurementController.HudChanged -= HandleMeasurementHudChanged;
         measurementController.StatusChanged += SetImportStatus;
         measurementController.ModeChanged += HandleMeasurementModeChanged;
+        measurementController.HudChanged += HandleMeasurementHudChanged;
     }
 
     private void UnsubscribeFromMeasurement()
@@ -190,6 +200,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
         measurementController.StatusChanged -= SetImportStatus;
         measurementController.ModeChanged -= HandleMeasurementModeChanged;
+        measurementController.HudChanged -= HandleMeasurementHudChanged;
     }
 
     private void BindUi()
@@ -208,6 +219,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         leftPanel = root.Q<VisualElement>("left-panel");
         detailsPanel = root.Q<VisualElement>("details-panel");
         categoryList = root.Q<VisualElement>("category-list");
+        categoryScroll = root.Q<ScrollView>("category-scroll");
         propertyList = root.Q<VisualElement>("property-list");
         modelManagerPopup = root.Q<VisualElement>("model-manager-popup");
         measurementPopup = root.Q<VisualElement>("measurement-popup");
@@ -216,11 +228,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         statusStrip = root.Q<VisualElement>("status-strip");
         loadingOverlay = root.Q<VisualElement>("loading-overlay");
         loadingSpinner = root.Q<VisualElement>("loading-spinner");
+        measurementHud = root.Q<VisualElement>("measurement-hud");
         totalCountLabel = root.Q<Label>("total-count");
         layerCountButton = root.Q<Button>("layer-button");
         measureButton = root.Q<Button>("measure-button");
         importStatusLabel = root.Q<Label>("import-status");
         loadingMessage = root.Q<Label>("loading-message");
+        measurementHudTitle = root.Q<Label>("measurement-hud-title");
+        measurementHudValue = root.Q<Label>("measurement-hud-value");
         detailTypeLabel = root.Q<Label>("detail-ifc-type");
         detailNameLabel = root.Q<Label>("detail-name");
         globalIdLabel = root.Q<Label>("detail-global-id");
@@ -266,6 +281,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         exportPopup.style.display = DisplayStyle.None;
         statusStrip.style.display = DisplayStyle.None;
         loadingOverlay.style.display = DisplayStyle.None;
+        measurementHud.style.display = DisplayStyle.None;
         root.RegisterCallback<GeometryChangedEvent>(HandleGeometryChanged);
 
         uiBound = true;
@@ -359,6 +375,25 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                 var state = metadata.GetComponent<IfcOperationsState>() ??
                             metadata.gameObject.AddComponent<IfcOperationsState>();
                 state.Initialize(category, metadata.EntityLabel, operationalIndex);
+                var elementKey = GetElementKey(metadata);
+                if (operationsDatabase != null &&
+                    operationsDatabase.TryLoad(
+                        modelContext.SourceFile,
+                        elementKey,
+                        out var snapshot))
+                {
+                    if (!string.IsNullOrWhiteSpace(snapshot.DisplayName))
+                    {
+                        metadata.gameObject.name = snapshot.DisplayName;
+                    }
+
+                    state.Restore(
+                        snapshot.Category,
+                        snapshot.Status,
+                        snapshot.OperationsGlobalId,
+                        snapshot.MaintenanceNote,
+                        snapshot.UpdatedAt);
+                }
 
                 records.Add(BuildRecord(
                     metadata,
@@ -561,6 +596,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private void BuildCategoryList()
     {
         categoryList.Clear();
+        assetRows.Clear();
 
         foreach (var definition in IfcInfrastructureClassifier.Definitions)
         {
@@ -639,6 +675,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                 tooltip = $"{record.IfcType} | ExpressID #{record.Metadata.EntityLabel}"
             };
             row.AddToClassList("asset-row");
+            assetRows[record.Metadata] = row;
 
             if (record == selectedRecord)
             {
@@ -723,8 +760,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private void SelectRecord(IfcAssetRecord record)
     {
         selectedRecord = record;
+        expandedCategories.Add(record.State.Category);
+        if (!MatchesStatusFilter(record))
+        {
+            activeStatusFilter = null;
+            UpdateStatusButtons();
+        }
+
         ShowDetails(record);
         BuildCategoryList();
+        if (assetRows.TryGetValue(record.Metadata, out var selectedRow))
+        {
+            categoryScroll.schedule.Execute(() => categoryScroll.ScrollTo(selectedRow));
+        }
+
+        var lodController = record.Metadata.GetComponentInParent<IfcModelLodController>();
+        lodController?.Reveal(record.Renderers);
 
         if (focusSelection)
         {
@@ -809,7 +860,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             (IfcOperationalStatus)Mathf.Clamp(statusDropdown.index, 0, 3),
             maintenanceNoteInput.value,
             DateTime.Now);
-        SetImportStatus($"Đã cập nhật vận hành cho {selectedRecord.Name}.");
+        var persisted = operationsDatabase != null &&
+                        operationsDatabase.Save(
+                            selectedRecord.SourceFile,
+                            GetElementKey(selectedRecord.Metadata),
+                            selectedRecord.Name,
+                            selectedRecord.State);
+        SetImportStatus(persisted
+            ? $"Đã lưu vận hành cho {selectedRecord.Name} vào SQLite."
+            : $"Đã cập nhật vận hành cho {selectedRecord.Name}; chưa thể ghi SQLite.");
         RefreshDashboard();
     }
 
@@ -1249,13 +1308,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
-        var ray = viewingCamera.ScreenPointToRay(pointerPosition);
-        if (!Physics.Raycast(ray, out var hit))
+        if (!IfcInteractionRaycaster.TryRaycast(
+                viewingCamera,
+                pointerPosition,
+                out _,
+                out var metadata))
         {
             return;
         }
 
-        var metadata = hit.transform.GetComponentInParent<IfcElementMetadata>();
         var record = records.FirstOrDefault(item => item.Metadata == metadata);
         if (record != null)
         {
@@ -1265,15 +1326,26 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private bool IsPointerOverDashboard(Vector2 screenPosition)
     {
-        if (root?.panel == null)
+        return IfcUiHitTest.IsPointerOverInteractiveUi(document, screenPosition);
+    }
+
+    private void HandleMeasurementHudChanged(string title, string value, bool visible)
+    {
+        if (measurementHud == null)
         {
-            return EventSystem.current != null &&
-                   EventSystem.current.IsPointerOverGameObject();
+            return;
         }
 
-        var panelPosition = RuntimePanelUtils.ScreenToPanel(root.panel, screenPosition);
-        var picked = root.panel.Pick(panelPosition);
-        return picked != null && picked != root;
+        measurementHudTitle.text = title;
+        measurementHudValue.text = value;
+        measurementHud.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+    }
+
+    private static string GetElementKey(IfcElementMetadata metadata)
+    {
+        return !string.IsNullOrWhiteSpace(metadata.GlobalId)
+            ? metadata.GlobalId
+            : $"#{metadata.EntityLabel}";
     }
 
     private void HandleGeometryChanged(GeometryChangedEvent change)
