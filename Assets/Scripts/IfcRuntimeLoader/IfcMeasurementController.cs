@@ -36,7 +36,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
 
     private void Awake()
     {
-        viewingCamera ??= Camera.main;
+        ResolveViewingCamera();
         dashboardDocument ??= GetComponent<UIDocument>();
         measurementMaterial = CreateMeasurementMaterial();
     }
@@ -63,6 +63,14 @@ public sealed class IfcMeasurementController : MonoBehaviour
             return;
         }
 
+        if (Keyboard.current != null &&
+            Keyboard.current.escapeKey.wasPressedThisFrame)
+        {
+            Stop();
+            StatusChanged?.Invoke("Đã thoát chế độ đo 3D.");
+            return;
+        }
+
         if (Mouse.current.rightButton.wasPressedThisFrame)
         {
             if (ActiveMode == IfcMeasurementMode.Area && pendingPoints.Count >= 3)
@@ -71,8 +79,8 @@ public sealed class IfcMeasurementController : MonoBehaviour
             }
             else
             {
-                CancelPendingMeasurement();
-                StatusChanged?.Invoke("Đã hủy phép đo hiện tại.");
+                Stop();
+                StatusChanged?.Invoke("Đã hủy phép đo và thoát chế độ đo 3D.");
             }
 
             return;
@@ -84,13 +92,18 @@ public sealed class IfcMeasurementController : MonoBehaviour
         }
 
         var screenPosition = Mouse.current.position.ReadValue();
+        HandlePrimaryClick(screenPosition);
+    }
+
+    private void HandlePrimaryClick(Vector2 screenPosition)
+    {
         if (IfcUiHitTest.IsPointerOverInteractiveUi(dashboardDocument, screenPosition))
         {
             return;
         }
 
         if (!IfcInteractionRaycaster.TryRaycast(
-                viewingCamera,
+                ResolveViewingCamera(),
                 screenPosition,
                 out var hit,
                 out _))
@@ -102,6 +115,21 @@ public sealed class IfcMeasurementController : MonoBehaviour
 
         var point = hit.point;
         AddPoint(point);
+    }
+
+    private Camera ResolveViewingCamera()
+    {
+        if (viewingCamera == null)
+        {
+            viewingCamera = Camera.main;
+        }
+
+        if (viewingCamera == null)
+        {
+            viewingCamera = FindFirstObjectByType<Camera>();
+        }
+
+        return viewingCamera;
     }
 
     public void Begin(IfcMeasurementMode mode)
@@ -138,7 +166,7 @@ public sealed class IfcMeasurementController : MonoBehaviour
 
     public void ClearMeasurements()
     {
-        CancelPendingMeasurement();
+        Stop();
         foreach (var measurement in completedMeasurements)
         {
             if (measurement != null)
@@ -148,8 +176,8 @@ public sealed class IfcMeasurementController : MonoBehaviour
         }
 
         completedMeasurements.Clear();
-        StatusChanged?.Invoke("Đã xóa tất cả phép đo 3D.");
-        HudChanged?.Invoke(string.Empty, string.Empty, false);
+        StatusChanged?.Invoke(
+            "Đã xóa tất cả phép đo và trở lại điều khiển camera.");
     }
 
     private void AddPoint(Vector3 point)

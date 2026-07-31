@@ -17,6 +17,10 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 {
     private const string ProjectName = "Tuyến Đường Vành Đai 3 - TP. Hà Nội";
     private const float ClickTolerancePixels = 8f;
+    private const float MaximumClickDurationSeconds = 0.3f;
+    private const float SelectedColorMultiplier = 0.42f;
+    private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+    private static readonly int ColorId = Shader.PropertyToID("_Color");
 
     [Header("IFC Integration")]
     [SerializeField] private XbimIfcLoader loader;
@@ -36,6 +40,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private readonly HashSet<IfcInfrastructureCategory> expandedCategories = new();
     private readonly Dictionary<int, Button> statusButtons = new();
     private readonly Dictionary<IfcElementMetadata, VisualElement> assetRows = new();
+    private readonly Dictionary<IfcElementMetadata, IfcAssetRecord> recordsByMetadata = new();
+    private readonly Dictionary<Transform, IfcAssetRecord> recordsByGeometry = new();
 
     private UIDocument document;
     private VisualElement root;
@@ -71,9 +77,11 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private IfcOperationalStatus? activeStatusFilter;
     private IfcMeasurementController measurementController;
     private IfcOperationsDatabase operationsDatabase;
+    private MaterialPropertyBlock selectionPropertyBlock;
     private Coroutine toastRoutine;
     private Coroutine startupLoadRoutine;
-    private Vector2 pointerDownPosition;
+    private Vector2 scenePointerDownPosition;
+    private float scenePointerDownTime;
     private float spinnerAngle;
     private bool pendingSceneClick;
     private bool startupLoading;
@@ -90,6 +98,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private void Awake()
     {
         Application.runInBackground = true;
+        selectionPropertyBlock = new MaterialPropertyBlock();
         document = GetComponent<UIDocument>();
         measurementController = GetComponent<IfcMeasurementController>() ??
                                 gameObject.AddComponent<IfcMeasurementController>();
@@ -112,6 +121,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void Start()
     {
+        ResolveDependencies();
         BindUi();
 
         if (loader != null && loader.LoadedModels.Count > 0)
@@ -126,6 +136,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void OnDisable()
     {
+        SetSelectionHighlight(selectedRecord, false);
         UnsubscribeFromLoader();
         UnsubscribeFromMeasurement();
     }
@@ -140,10 +151,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     {
         loader ??= FindFirstObjectByType<XbimIfcLoader>();
         runtimeLoader ??= FindFirstObjectByType<RuntimeIfcLoader>();
-        viewingCamera ??= Camera.main;
-        orbitCamera ??= viewingCamera != null
-            ? viewingCamera.GetComponent<OrbitCamera>()
-            : FindFirstObjectByType<OrbitCamera>();
+        if (viewingCamera == null)
+        {
+            viewingCamera = Camera.main;
+        }
+
+        if (viewingCamera == null)
+        {
+            viewingCamera = FindFirstObjectByType<Camera>();
+        }
+
+        if (orbitCamera == null)
+        {
+            orbitCamera = viewingCamera != null
+                ? viewingCamera.GetComponent<OrbitCamera>()
+                : FindFirstObjectByType<OrbitCamera>();
+        }
     }
 
     private void SubscribeToLoader()
@@ -341,7 +364,10 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void RebuildModelIndex()
     {
+        SetSelectionHighlight(selectedRecord, false);
         records.Clear();
+        recordsByMetadata.Clear();
+        recordsByGeometry.Clear();
         selectedRecord = null;
 
         if (loader == null || loader.LoadedModels.Count == 0)
@@ -395,12 +421,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                         snapshot.UpdatedAt);
                 }
 
-                records.Add(BuildRecord(
+                var record = BuildRecord(
                     metadata,
                     state,
                     renderers,
                     modelRoot.transform,
-                    modelContext));
+                    modelContext);
+                records.Add(record);
+                recordsByMetadata[metadata] = record;
+                foreach (var renderer in renderers)
+                {
+                    if (renderer != null)
+                    {
+                        recordsByGeometry[renderer.transform] = record;
+                    }
+                }
+
                 operationalIndex++;
             }
         }
@@ -757,9 +793,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
     }
 
-    private void SelectRecord(IfcAssetRecord record)
+    private void SelectRecord(IfcAssetRecord record, bool frameSelection = true)
     {
+        if (selectedRecord != record)
+        {
+            SetSelectionHighlight(selectedRecord, false);
+        }
+
         selectedRecord = record;
+        SetSelectionHighlight(record, true);
         expandedCategories.Add(record.State.Category);
         if (!MatchesStatusFilter(record))
         {
@@ -777,7 +819,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         var lodController = record.Metadata.GetComponentInParent<IfcModelLodController>();
         lodController?.Reveal(record.Renderers);
 
-        if (focusSelection)
+        if (focusSelection && frameSelection)
         {
             FrameBounds(record.Bounds);
         }
@@ -888,6 +930,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void CloseDetails()
     {
+        SetSelectionHighlight(selectedRecord, false);
         selectedRecord = null;
         detailsPanel.style.display = DisplayStyle.None;
         BuildCategoryList();
@@ -1042,6 +1085,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void ToggleMeasurementPopup()
     {
+        if (measurementController != null &&
+            measurementController.ActiveMode != IfcMeasurementMode.None)
+        {
+            measurementController.Stop();
+            HidePopups();
+            SetImportStatus("Đã thoát chế độ đo 3D.");
+            return;
+        }
+
         TogglePopup(measurementPopup);
     }
 
@@ -1282,46 +1334,146 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void HandleSceneSelection()
     {
+        ResolveDependencies();
         if (Mouse.current == null ||
-            viewingCamera == null ||
             records.Count == 0 ||
             measurementController?.ActiveMode != IfcMeasurementMode.None)
         {
+            pendingSceneClick = false;
             return;
         }
 
         if (Mouse.current.leftButton.wasPressedThisFrame)
         {
-            pointerDownPosition = Mouse.current.position.ReadValue();
-            pendingSceneClick = !IsPointerOverDashboard(pointerDownPosition);
+            scenePointerDownPosition = Mouse.current.position.ReadValue();
+            scenePointerDownTime = Time.unscaledTime;
+            pendingSceneClick = !IsPointerOverDashboard(scenePointerDownPosition);
         }
 
-        if (!Mouse.current.leftButton.wasReleasedThisFrame || !pendingSceneClick)
+        if (!Mouse.current.leftButton.wasReleasedThisFrame ||
+            !pendingSceneClick)
         {
             return;
         }
 
         pendingSceneClick = false;
         var pointerPosition = Mouse.current.position.ReadValue();
-        if (Vector2.Distance(pointerDownPosition, pointerPosition) > ClickTolerancePixels)
+        var heldDuration = Time.unscaledTime - scenePointerDownTime;
+        if (heldDuration > MaximumClickDurationSeconds ||
+            Vector2.Distance(scenePointerDownPosition, pointerPosition) >
+            ClickTolerancePixels)
         {
             return;
+        }
+
+        TrySelectSceneElement(pointerPosition);
+    }
+
+    private bool TrySelectSceneElement(Vector2 pointerPosition)
+    {
+        if (IsPointerOverDashboard(pointerPosition))
+        {
+            return false;
         }
 
         if (!IfcInteractionRaycaster.TryRaycast(
                 viewingCamera,
                 pointerPosition,
-                out _,
+                out var hit,
                 out var metadata))
+        {
+            return false;
+        }
+
+        var record = FindRecordForHit(hit.transform, metadata);
+        if (record == null)
+        {
+            return false;
+        }
+
+        SelectRecord(record, false);
+        return true;
+    }
+
+    private void SetSelectionHighlight(IfcAssetRecord record, bool highlighted)
+    {
+        if (record == null)
         {
             return;
         }
 
-        var record = records.FirstOrDefault(item => item.Metadata == metadata);
-        if (record != null)
+        foreach (var renderer in record.Renderers)
         {
-            SelectRecord(record);
+            if (renderer == null)
+            {
+                continue;
+            }
+
+            var materials = renderer.sharedMaterials;
+            for (var materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+            {
+                if (!highlighted)
+                {
+                    renderer.SetPropertyBlock(null, materialIndex);
+                    continue;
+                }
+
+                var material = materials[materialIndex];
+                if (material == null)
+                {
+                    continue;
+                }
+
+                var sourceColor = material.HasProperty(BaseColorId)
+                    ? material.GetColor(BaseColorId)
+                    : material.HasProperty(ColorId)
+                        ? material.GetColor(ColorId)
+                        : Color.white;
+                var selectedColor = new Color(
+                    sourceColor.r * SelectedColorMultiplier,
+                    sourceColor.g * SelectedColorMultiplier,
+                    sourceColor.b * SelectedColorMultiplier,
+                    sourceColor.a);
+
+                selectionPropertyBlock.Clear();
+                renderer.GetPropertyBlock(selectionPropertyBlock, materialIndex);
+                selectionPropertyBlock.SetColor(BaseColorId, selectedColor);
+                selectionPropertyBlock.SetColor(ColorId, selectedColor);
+                renderer.SetPropertyBlock(selectionPropertyBlock, materialIndex);
+            }
         }
+    }
+
+    private IfcAssetRecord FindRecordForHit(
+        Transform hitTransform,
+        IfcElementMetadata metadata)
+    {
+        if (metadata != null &&
+            recordsByMetadata.TryGetValue(metadata, out var metadataRecord))
+        {
+            return metadataRecord;
+        }
+
+        for (var current = hitTransform; current != null; current = current.parent)
+        {
+            if (recordsByGeometry.TryGetValue(current, out var geometryRecord))
+            {
+                return geometryRecord;
+            }
+
+            if (current.TryGetComponent<IfcElementMetadata>(out var owner) &&
+                recordsByMetadata.TryGetValue(owner, out var ownerRecord))
+            {
+                return ownerRecord;
+            }
+        }
+
+        return records.FirstOrDefault(record =>
+            record.Renderers.Any(renderer =>
+                renderer != null &&
+                (renderer.transform == hitTransform ||
+                 hitTransform.IsChildOf(renderer.transform) ||
+                 renderer.transform.IsChildOf(hitTransform))));
     }
 
     private bool IsPointerOverDashboard(Vector2 screenPosition)
