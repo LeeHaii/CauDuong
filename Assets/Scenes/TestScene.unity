@@ -1198,7 +1198,22 @@ MonoBehaviour:
   generateMeshColliders: 1
   linearDeflectionMillimetres: 30
   angularDeflectionDegrees: 60
+  simplifyMeshes: 1
+  minimumSimplificationTriangles: 1000
+  standardMeshQuality: 0.65
+  aggressiveSimplificationTriangles: 5000
+  aggressiveMeshQuality: 0.45
+  extremeSimplificationTriangles: 20000
+  extremeMeshQuality: 0.3
+  broadSurfaceMeshQuality: 0.55
+  useQuadricSimplification: 1
+  preserveBoundaryEdges: 1
+  importTextureCoordinates: 0
+  importTangents: 0
+  releaseCpuMeshData: 1
   meshesPerFrame: 16
+  sourceTrianglesPerFrame: 40000
+  converterTimeoutSeconds: 900
 --- !u!4 &1029702757
 Transform:
   m_ObjectHideFlags: 0

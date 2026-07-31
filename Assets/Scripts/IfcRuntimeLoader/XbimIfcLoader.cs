@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
+using UnityMeshSimplifier;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Debug = UnityEngine.Debug;
@@ -12,9 +14,12 @@ using Debug = UnityEngine.Debug;
 public sealed class XbimIfcLoader : MonoBehaviour
 {
     private const uint MeshFileMagic = 0x4D494258;
-    private const int MeshFileVersion = 2;
+    private const int RawMeshFileVersion = 2;
+    private const int OptimizedMeshFileVersion = 3;
+    private const int OptimizationRevision = 2;
     private const int MaxRecordCount = 10_000_000;
     private const int MaxStringLength = 1_000_000;
+    private const string SourcePathProperty = "Source IFC Path";
 
     [Header("Generated Model")]
     [SerializeField] private Transform modelParent;
@@ -27,9 +32,37 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [Tooltip("Maximum angular deviation in degrees. Higher values reduce segments around curves.")]
     [SerializeField, Range(1f, 90f)] private float angularDeflectionDegrees = 30f;
 
+    [Header("Post-Tessellation Simplification")]
+    [SerializeField] private bool simplifyMeshes = true;
+    [Tooltip("Meshes below this triangle count are kept intact.")]
+    [SerializeField, Min(12)] private int minimumSimplificationTriangles = 1_000;
+    [SerializeField, Range(0.05f, 1f)] private float standardMeshQuality = 0.65f;
+    [SerializeField, Min(1000)] private int aggressiveSimplificationTriangles = 5_000;
+    [SerializeField, Range(0.03f, 1f)] private float aggressiveMeshQuality = 0.45f;
+    [SerializeField, Min(5000)] private int extremeSimplificationTriangles = 20_000;
+    [SerializeField, Range(0.02f, 1f)] private float extremeMeshQuality = 0.3f;
+    [Tooltip("Quality used for broad road, terrain, marking, and pavement surfaces.")]
+    [SerializeField, Range(0.02f, 1f)] private float broadSurfaceMeshQuality = 0.55f;
+    [Tooltip("Boundary-preserving QEM is slower on first import but does not weld unrelated IFC patches.")]
+    [SerializeField] private bool useQuadricSimplification = true;
+    [SerializeField] private bool preserveBoundaryEdges = true;
+
+    [Header("Mesh Memory")]
+    [Tooltip("IFC colors do not require UVs unless textured materials are added later.")]
+    [SerializeField] private bool importTextureCoordinates;
+    [SerializeField] private bool importTangents;
+    [Tooltip("Releases CPU-side mesh copies after physics cooking and GPU upload.")]
+    [SerializeField] private bool releaseCpuMeshData = true;
+
     [Header("Import Budget")]
     [Min(1)]
     [SerializeField] private int meshesPerFrame = 16;
+    [Tooltip("Yield after processing approximately this many source triangles.")]
+    [Min(1_000)]
+    [SerializeField] private int sourceTrianglesPerFrame = 40_000;
+    [Tooltip("Maximum time allowed for one native xBIM conversion.")]
+    [Min(30f)]
+    [SerializeField] private float converterTimeoutSeconds = 900f;
 
     private readonly List<GameObject> loadedModels = new();
     private readonly Dictionary<GameObject, List<Material>> modelMaterials = new();
@@ -43,6 +76,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
     public bool IsLoading { get; private set; }
     public GameObject LoadedModel => loadedModel;
     public IReadOnlyList<GameObject> LoadedModels => loadedModels;
+    public long LastSourceTriangleCount { get; private set; }
+    public long LastOptimizedTriangleCount { get; private set; }
+    public float LastTriangleReduction =>
+        LastSourceTriangleCount > 0
+            ? 1f - (float)LastOptimizedTriangleCount / LastSourceTriangleCount
+            : 0f;
     public float LinearDeflection
     {
         get => linearDeflectionMillimetres;
@@ -66,6 +105,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
         {
             gameObject.AddComponent<IfcGeoPositionExtractor>();
         }
+    }
+
+    private void OnEnable()
+    {
+        RecoverLoadedModelsAfterDomainReload();
     }
 
     public void LoadIFC(string path)
@@ -133,61 +177,115 @@ public sealed class XbimIfcLoader : MonoBehaviour
             yield break;
         }
 
-        var cacheDirectory = Path.Combine(Application.temporaryCachePath, "XbimIfc");
+        var cacheDirectory = Path.Combine(
+            Application.persistentDataPath,
+            "XbimIfcCache");
         Directory.CreateDirectory(cacheDirectory);
-        var meshPath = Path.Combine(cacheDirectory, Guid.NewGuid().ToString("N") + ".xbimmesh");
-
-        SetStatus(
-            $"Converting IFC geometry at {LinearDeflection:G4} mm / " +
-            $"{AngularDeflection:G4} deg deflection...");
-
-        Process process;
-
-        try
+        var meshPath = GetConvertedMeshCachePath(path, cacheDirectory);
+        if (IsMeshFileValid(meshPath, RawMeshFileVersion))
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = converterPath,
-                Arguments = BuildConverterArguments(path, meshPath),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-                WorkingDirectory = Path.GetDirectoryName(converterPath)
-            };
-
-            process = new Process { StartInfo = startInfo };
-            process.Start();
+            SetStatus($"Loading cached IFC geometry: {Path.GetFileName(path)}");
         }
-        catch (Exception exception)
+        else
         {
-            Fail($"Could not start the xBIM converter: {exception.Message}");
-            yield break;
-        }
+            DeleteTemporaryFile(meshPath);
+            var partialPath =
+                meshPath + "." + Guid.NewGuid().ToString("N") + ".partial";
+            SetStatus(
+                $"Converting IFC geometry at {LinearDeflection:G4} mm / " +
+                $"{AngularDeflection:G4} deg deflection...");
 
-        using (process)
-        {
-            while (!process.HasExited && !IsFileReady(meshPath))
+            Process process;
+            try
             {
-                yield return null;
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = converterPath,
+                    Arguments = BuildConverterArguments(path, partialPath),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false,
+                    WorkingDirectory = Path.GetDirectoryName(converterPath)
+                };
+
+                process = new Process { StartInfo = startInfo };
+                process.Start();
+            }
+            catch (Exception exception)
+            {
+                DeleteTemporaryFile(partialPath);
+                Fail($"Could not start the xBIM converter: {exception.Message}");
+                yield break;
             }
 
-            if (process.HasExited && process.ExitCode != 0)
+            var conversionTimer = Stopwatch.StartNew();
+            using (process)
             {
-                Fail($"xBIM conversion failed with exit code {process.ExitCode}.");
-                DeleteTemporaryFile(meshPath);
+                while (!IsFileReady(partialPath))
+                {
+                    if (process.HasExited)
+                    {
+                        var exitCode = process.ExitCode;
+                        DeleteTemporaryFile(partialPath);
+                        Fail(
+                            exitCode == 0
+                                ? "xBIM conversion completed without producing mesh data."
+                                : $"xBIM conversion failed with exit code {exitCode}.");
+                        yield break;
+                    }
+
+                    if (conversionTimer.Elapsed.TotalSeconds >=
+                        converterTimeoutSeconds)
+                    {
+                        TryTerminateProcess(process);
+                        DeleteTemporaryFile(partialPath);
+                        Fail(
+                            $"xBIM conversion timed out after " +
+                            $"{converterTimeoutSeconds:G0} seconds.");
+                        yield break;
+                    }
+
+                    yield return null;
+                }
+            }
+
+            try
+            {
+                if (File.Exists(meshPath))
+                {
+                    File.Delete(meshPath);
+                }
+
+                File.Move(partialPath, meshPath);
+            }
+            catch (Exception exception)
+            {
+                DeleteTemporaryFile(partialPath);
+                Fail($"Could not store the IFC geometry cache: {exception.Message}");
                 yield break;
             }
         }
 
-        if (!File.Exists(meshPath) || new FileInfo(meshPath).Length == 0)
+        if (!IsMeshFileValid(meshPath, RawMeshFileVersion))
         {
             Fail("xBIM conversion completed without producing mesh data.");
-            DeleteTemporaryFile(meshPath);
             yield break;
         }
 
-        SetStatus("Creating Unity hierarchy and meshes...");
+        var optimizedMeshPath = GetOptimizedMeshCachePath(path, cacheDirectory);
+        var hasOptimizedCache = IsMeshFileValid(
+            optimizedMeshPath,
+            OptimizedMeshFileVersion);
+        if (!hasOptimizedCache)
+        {
+            DeleteTemporaryFile(optimizedMeshPath);
+        }
+
+        SetStatus(
+            hasOptimizedCache
+                ? "Creating Unity objects from optimized mesh cache..."
+                : "Creating and optimizing Unity meshes...");
 
         Exception importException = null;
         IEnumerator importRoutine = null;
@@ -195,9 +293,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         try
         {
             importRoutine = ImportMeshFile(
-                meshPath,
+                hasOptimizedCache ? optimizedMeshPath : meshPath,
                 Path.GetFileNameWithoutExtension(path),
-                path);
+                path,
+                hasOptimizedCache ? null : optimizedMeshPath);
         }
         catch (Exception exception)
         {
@@ -228,8 +327,6 @@ public sealed class XbimIfcLoader : MonoBehaviour
             }
         }
 
-        DeleteTemporaryFile(meshPath);
-
         if (importException != null)
         {
             Fail($"Could not create Unity meshes: {importException.Message}");
@@ -244,7 +341,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         loadedModels.Add(loadedModel);
         modelSourcePaths[loadedModel] = path;
         importingModel = null;
-        SetStatus("IFC import complete.");
+        SetStatus(
+            $"IFC import complete: {LastSourceTriangleCount:N0} to " +
+            $"{LastOptimizedTriangleCount:N0} triangles " +
+            $"({LastTriangleReduction:P1} reduction).");
         LoadCompleted?.Invoke(loadedModel);
         ModelsChanged?.Invoke();
         StartNextQueuedImport();
@@ -275,7 +375,8 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private IEnumerator ImportMeshFile(
         string path,
         string modelName,
-        string sourcePath)
+        string sourcePath,
+        string optimizedCachePath)
     {
         using var stream = File.OpenRead(path);
         using var reader = new BinaryReader(stream, Encoding.UTF8);
@@ -286,11 +387,16 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
 
         var version = reader.ReadInt32();
-        if (version != MeshFileVersion)
+        if (version != RawMeshFileVersion &&
+            version != OptimizedMeshFileVersion)
         {
             throw new InvalidDataException($"Unsupported xBIM mesh version: {version}.");
         }
 
+        var isOptimizedCache = version == OptimizedMeshFileVersion;
+        var cachedSourceTriangleCount = isOptimizedCache
+            ? reader.ReadInt64()
+            : 0L;
         var metresPerUnit = reader.ReadDouble();
         if (!double.IsFinite(metresPerUnit) || metresPerUnit <= 0d || metresPerUnit > 1_000_000d)
         {
@@ -307,9 +413,40 @@ public sealed class XbimIfcLoader : MonoBehaviour
         var meshCount = reader.ReadInt32();
         ValidateRecordCount(meshCount, "mesh");
 
+        var optimizedPartialPath = string.IsNullOrWhiteSpace(optimizedCachePath)
+            ? null
+            : optimizedCachePath + ".partial";
+        if (optimizedPartialPath != null)
+        {
+            DeleteTemporaryFile(optimizedPartialPath);
+        }
+
+        using var optimizedCache = optimizedPartialPath != null
+            ? new OptimizedMeshCacheWriter(
+                optimizedPartialPath,
+                optimizedCachePath)
+            : null;
+        var optimizedWriter = optimizedCache?.Writer;
+        if (optimizedWriter != null)
+        {
+            WriteOptimizedHeader(
+                optimizedWriter,
+                metresPerUnit,
+                originX,
+                originY,
+                originZ,
+                styles,
+                hierarchy,
+                meshCount);
+        }
+
         loadedModel = new GameObject(modelName);
         importingModel = loadedModel;
         activeMaterialCache = new Dictionary<int, Material>();
+        LastSourceTriangleCount = isOptimizedCache
+            ? cachedSourceTriangleCount
+            : 0;
+        LastOptimizedTriangleCount = 0;
         modelMaterials[loadedModel] = new List<Material>();
         modelSourcePaths[loadedModel] = sourcePath;
         if (modelParent != null)
@@ -320,27 +457,33 @@ public sealed class XbimIfcLoader : MonoBehaviour
         loadedModel.transform.localScale = Vector3.one * (float)metresPerUnit;
 
         var modelMetadata = loadedModel.AddComponent<IfcMetadataComponent>();
-        modelMetadata.Initialize(
-            "IfcModel",
-            string.Empty,
-            0,
-            new[]
-            {
-                new KeyValuePair<string, string>(
-                    "Length Scale (metres/unit)",
-                    metresPerUnit.ToString("G9")),
-                new KeyValuePair<string, string>(
-                    "Local Origin (IFC coordinates)",
-                    $"{originX:G9}, {originY:G9}, {originZ:G9}"),
-                new KeyValuePair<string, string>(
-                    "Linear Deflection (mm)",
-                    LinearDeflection.ToString("G9", CultureInfo.InvariantCulture)),
-                new KeyValuePair<string, string>(
-                    "Angular Deflection (degrees)",
-                    AngularDeflection.ToString("G9", CultureInfo.InvariantCulture))
-            });
+        var modelProperties = new List<KeyValuePair<string, string>>
+        {
+            new(
+                "Length Scale (metres/unit)",
+                metresPerUnit.ToString("G9")),
+            new(SourcePathProperty, sourcePath),
+            new(
+                "Local Origin (IFC coordinates)",
+                $"{originX:G9}, {originY:G9}, {originZ:G9}"),
+            new(
+                "Linear Deflection (mm)",
+                LinearDeflection.ToString("G9", CultureInfo.InvariantCulture)),
+            new(
+                "Angular Deflection (degrees)",
+                AngularDeflection.ToString("G9", CultureInfo.InvariantCulture)),
+            new(
+                "Post-Tessellation Simplification",
+                simplifyMeshes
+                    ? useQuadricSimplification
+                        ? "Adaptive clustering + QEM"
+                        : "Adaptive clustering"
+                    : "Disabled")
+        };
+        modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
 
         var hierarchyObjects = CreateHierarchy(hierarchy, loadedModel.transform);
+        var processedTrianglesThisFrame = 0;
 
         for (var meshIndex = 0; meshIndex < meshCount; meshIndex++)
         {
@@ -372,22 +515,30 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
             var uvCount = reader.ReadInt32();
             ValidateChannelCount(uvCount, vertexCount, "UV");
-            var uvs = new Vector2[uvCount];
+            var uvs = importTextureCoordinates ? new Vector2[uvCount] : null;
             for (var uvIndex = 0; uvIndex < uvCount; uvIndex++)
             {
-                uvs[uvIndex] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
+                var x = reader.ReadSingle();
+                var y = reader.ReadSingle();
+                if (uvs != null)
+                {
+                    uvs[uvIndex] = new Vector2(x, y);
+                }
             }
 
             var tangentCount = reader.ReadInt32();
             ValidateChannelCount(tangentCount, vertexCount, "tangent");
-            var tangents = new Vector4[tangentCount];
+            var tangents = importTangents ? new Vector4[tangentCount] : null;
             for (var tangentIndex = 0; tangentIndex < tangentCount; tangentIndex++)
             {
                 var x = reader.ReadSingle();
                 var y = reader.ReadSingle();
                 var z = reader.ReadSingle();
                 var w = reader.ReadSingle();
-                tangents[tangentIndex] = new Vector4(x, z, y, -w);
+                if (tangents != null)
+                {
+                    tangents[tangentIndex] = new Vector4(x, z, y, -w);
+                }
             }
 
             var subMeshCount = reader.ReadInt32();
@@ -399,9 +550,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
             var subMeshes = new int[subMeshCount][];
             var materials = new Material[subMeshCount];
+            var styleLabels = new int[subMeshCount];
             for (var subMeshIndex = 0; subMeshIndex < subMeshCount; subMeshIndex++)
             {
                 var styleLabel = reader.ReadInt32();
+                styleLabels[subMeshIndex] = styleLabel;
                 var indexCount = reader.ReadInt32();
                 ValidateCount(indexCount, "index");
                 if (indexCount % 3 != 0)
@@ -448,12 +601,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 mesh.normals = normals;
             }
 
-            if (uvCount == vertexCount)
+            if (uvs != null && uvCount == vertexCount)
             {
                 mesh.uv = uvs;
             }
 
-            if (tangentCount == vertexCount)
+            if (tangents != null && tangentCount == vertexCount)
             {
                 mesh.tangents = tangents;
             }
@@ -469,12 +622,37 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 mesh.RecalculateNormals();
             }
 
-            if (tangentCount != vertexCount && uvCount == vertexCount)
+            if (importTangents &&
+                tangentCount != vertexCount &&
+                importTextureCoordinates &&
+                uvCount == vertexCount)
             {
                 mesh.RecalculateTangents();
             }
 
             mesh.RecalculateBounds();
+            var sourceTriangleCount = CountTriangles(subMeshes);
+            if (!isOptimizedCache)
+            {
+                LastSourceTriangleCount += sourceTriangleCount;
+            }
+
+            processedTrianglesThisFrame += sourceTriangleCount;
+            if (!isOptimizedCache)
+            {
+                mesh = SimplifyMesh(mesh, sourceTriangleCount);
+            }
+
+            LastOptimizedTriangleCount += CountTriangles(mesh);
+            if (optimizedWriter != null)
+            {
+                WriteOptimizedMesh(
+                    optimizedWriter,
+                    objectName,
+                    productLabel,
+                    mesh,
+                    styleLabels);
+            }
 
             var element = new GameObject(objectName);
             var parent = hierarchyObjects.TryGetValue(productLabel, out var productObject)
@@ -486,15 +664,168 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
             if (generateMeshColliders)
             {
-                element.AddComponent<MeshCollider>().sharedMesh = mesh;
+                var meshCollider = element.AddComponent<MeshCollider>();
+                meshCollider.cookingOptions =
+                    MeshColliderCookingOptions.CookForFasterSimulation |
+                    MeshColliderCookingOptions.EnableMeshCleaning |
+                    MeshColliderCookingOptions.WeldColocatedVertices |
+                    MeshColliderCookingOptions.UseFastMidphase;
+                meshCollider.sharedMesh = mesh;
             }
 
-            if ((meshIndex + 1) % meshesPerFrame == 0)
+            if (releaseCpuMeshData)
+            {
+                mesh.UploadMeshData(true);
+            }
+
+            if ((meshIndex + 1) % meshesPerFrame == 0 ||
+                processedTrianglesThisFrame >= sourceTrianglesPerFrame)
             {
                 SetStatus($"Creating Unity meshes... {meshIndex + 1}/{meshCount}");
+                processedTrianglesThisFrame = 0;
                 yield return null;
             }
         }
+
+        if (optimizedWriter != null)
+        {
+            optimizedCache.Commit(LastSourceTriangleCount);
+        }
+
+        var reductionPercent = LastTriangleReduction * 100f;
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Source Triangles",
+            LastSourceTriangleCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Optimized Triangles",
+            LastOptimizedTriangleCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Triangle Reduction",
+            $"{reductionPercent:F1}%"));
+        modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
+    }
+
+    private Mesh SimplifyMesh(Mesh sourceMesh, int sourceTriangleCount)
+    {
+        if (!simplifyMeshes ||
+            sourceTriangleCount < minimumSimplificationTriangles)
+        {
+            OptimizeMeshBuffers(sourceMesh);
+            return sourceMesh;
+        }
+
+        var quality = sourceTriangleCount >= extremeSimplificationTriangles
+            ? extremeMeshQuality
+            : sourceTriangleCount >= aggressiveSimplificationTriangles
+                ? aggressiveMeshQuality
+                : standardMeshQuality;
+        var isBroadSurface = IsBroadSurfaceMesh(sourceMesh.name);
+        if (isBroadSurface)
+        {
+            quality = Mathf.Min(quality, broadSurfaceMeshQuality);
+        }
+
+        if (!useQuadricSimplification)
+        {
+            OptimizeMeshBuffers(sourceMesh);
+            return sourceMesh;
+        }
+
+        var resultMesh = sourceMesh;
+        try
+        {
+            var options = SimplificationOptions.Default;
+            options.PreserveBorderEdges = preserveBoundaryEdges;
+            options.PreserveUVSeamEdges = importTextureCoordinates;
+            options.PreserveUVFoldoverEdges = importTextureCoordinates;
+            options.PreserveSurfaceCurvature = false;
+            options.EnableSmartLink = true;
+            options.MaxIterationCount = 100;
+            options.Agressiveness = 7d;
+
+            var simplifier = new MeshSimplifier
+            {
+                SimplificationOptions = options
+            };
+            simplifier.Initialize(sourceMesh);
+            simplifier.SimplifyMesh(quality);
+
+            var simplifiedMesh = simplifier.ToMesh();
+            simplifiedMesh.name = sourceMesh.name;
+            simplifiedMesh.RecalculateBounds();
+
+            var simplifiedTriangleCount = CountTriangles(simplifiedMesh);
+            if (simplifiedTriangleCount > 0 &&
+                simplifiedTriangleCount < sourceTriangleCount)
+            {
+                resultMesh = simplifiedMesh;
+            }
+            else
+            {
+                Destroy(simplifiedMesh);
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning(
+                $"Could not simplify IFC mesh '{sourceMesh.name}': {exception.Message}");
+        }
+
+        OptimizeMeshBuffers(resultMesh);
+        if (resultMesh != sourceMesh)
+        {
+            Destroy(sourceMesh);
+        }
+
+        return resultMesh;
+    }
+
+    private static int CountTriangles(IReadOnlyList<int[]> subMeshes)
+    {
+        var count = 0;
+        foreach (var indices in subMeshes)
+        {
+            count += indices.Length / 3;
+        }
+
+        return count;
+    }
+
+    private static int CountTriangles(Mesh mesh)
+    {
+        var count = 0;
+        for (var subMeshIndex = 0; subMeshIndex < mesh.subMeshCount; subMeshIndex++)
+        {
+            count += (int)(mesh.GetIndexCount(subMeshIndex) / 3);
+        }
+
+        return count;
+    }
+
+    private static void OptimizeMeshBuffers(Mesh mesh)
+    {
+        mesh.OptimizeIndexBuffers();
+        mesh.OptimizeReorderVertexBuffer();
+    }
+
+    private static bool IsBroadSurfaceMesh(string meshName)
+    {
+        if (string.IsNullOrWhiteSpace(meshName))
+        {
+            return false;
+        }
+
+        var value = meshName.ToLowerInvariant();
+        return value.Contains("topo") ||
+               value.Contains("pave") ||
+               value.Contains("thảm") ||
+               value.Contains("tham") ||
+               value.Contains("mặt đường") ||
+               value.Contains("mat duong") ||
+               value.Contains("vạch") ||
+               value.Contains("vach") ||
+               value.Contains("taluy") ||
+               value.Contains("ledat");
     }
 
     private Dictionary<int, IfcMaterialStyle> ReadStyles(BinaryReader reader)
@@ -712,18 +1043,116 @@ public sealed class XbimIfcLoader : MonoBehaviour
             }
         }
 
-        if (modelMaterials.Remove(model, out var materials))
+        if (!modelMaterials.Remove(model, out var materials))
         {
-            foreach (var material in materials)
+            var uniqueMaterials = new HashSet<Material>();
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
             {
-                if (material != null)
+                foreach (var material in renderer.sharedMaterials)
                 {
-                    Destroy(material);
+                    if (material != null)
+                    {
+                        uniqueMaterials.Add(material);
+                    }
                 }
+            }
+
+            materials = new List<Material>(uniqueMaterials);
+        }
+
+        foreach (var material in materials)
+        {
+            if (material != null)
+            {
+                Destroy(material);
             }
         }
 
         Destroy(model);
+    }
+
+    private void RecoverLoadedModelsAfterDomainReload()
+    {
+        if (loadedModels.Count > 0)
+        {
+            return;
+        }
+
+        var recovered = FindObjectsByType<IfcMetadataComponent>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        var interruptedImports = new List<string>();
+        foreach (var metadata in recovered)
+        {
+            if (metadata == null || metadata.IfcType != "IfcModel")
+            {
+                continue;
+            }
+
+            var model = metadata.gameObject;
+            metadata.Properties.TryGetValue(
+                SourcePathProperty,
+                out var sourcePath);
+            if (!metadata.Properties.ContainsKey("Optimized Triangles"))
+            {
+                if (!string.IsNullOrWhiteSpace(sourcePath) &&
+                    File.Exists(sourcePath))
+                {
+                    interruptedImports.Add(sourcePath);
+                }
+
+                DestroyModelResources(model);
+                continue;
+            }
+
+            loadedModels.Add(model);
+            loadedModel = model;
+
+            if (!string.IsNullOrWhiteSpace(sourcePath))
+            {
+                modelSourcePaths[model] = sourcePath;
+            }
+
+            var uniqueMaterials = new HashSet<Material>();
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+            {
+                foreach (var material in renderer.sharedMaterials)
+                {
+                    if (material != null)
+                    {
+                        uniqueMaterials.Add(material);
+                    }
+                }
+            }
+
+            modelMaterials[model] = new List<Material>(uniqueMaterials);
+        }
+
+        if (loadedModels.Count == 0 && interruptedImports.Count == 0)
+        {
+            return;
+        }
+
+        IsLoading = false;
+        importingModel = null;
+        loadRoutine = null;
+        if (loadedModels.Count > 0)
+        {
+            StartCoroutine(NotifyRecoveredModelsNextFrame());
+        }
+
+        foreach (var sourcePath in interruptedImports)
+        {
+            pendingImports.Enqueue(sourcePath);
+        }
+
+        StartNextQueuedImport();
+    }
+
+    private IEnumerator NotifyRecoveredModelsNextFrame()
+    {
+        yield return null;
+        ModelsChanged?.Invoke();
     }
 
     private void OnDestroy()
@@ -780,11 +1209,345 @@ public sealed class XbimIfcLoader : MonoBehaviour
             AngularDeflection.ToString("R", CultureInfo.InvariantCulture));
     }
 
+    private string GetConvertedMeshCachePath(
+        string inputPath,
+        string cacheDirectory)
+    {
+        var fingerprint = string.Join(
+            "|",
+            BuildSourceFingerprint(inputPath),
+            LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
+            AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
+            RawMeshFileVersion.ToString(CultureInfo.InvariantCulture));
+        return BuildCachePath(inputPath, cacheDirectory, fingerprint, string.Empty);
+    }
+
+    private string GetOptimizedMeshCachePath(
+        string inputPath,
+        string cacheDirectory)
+    {
+        var fingerprint = string.Join(
+            "|",
+            BuildSourceFingerprint(inputPath),
+            LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
+            AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
+            OptimizationRevision.ToString(CultureInfo.InvariantCulture),
+            simplifyMeshes,
+            minimumSimplificationTriangles,
+            standardMeshQuality.ToString("R", CultureInfo.InvariantCulture),
+            aggressiveSimplificationTriangles,
+            aggressiveMeshQuality.ToString("R", CultureInfo.InvariantCulture),
+            extremeSimplificationTriangles,
+            extremeMeshQuality.ToString("R", CultureInfo.InvariantCulture),
+            broadSurfaceMeshQuality.ToString("R", CultureInfo.InvariantCulture),
+            useQuadricSimplification,
+            preserveBoundaryEdges,
+            importTextureCoordinates,
+            importTangents,
+            OptimizedMeshFileVersion);
+        return BuildCachePath(
+            inputPath,
+            cacheDirectory,
+            fingerprint,
+            "-optimized");
+    }
+
+    private static string BuildSourceFingerprint(string inputPath)
+    {
+        var file = new FileInfo(inputPath);
+        return string.Join(
+            "|",
+            Path.GetFullPath(inputPath).ToUpperInvariant(),
+            file.Length.ToString(CultureInfo.InvariantCulture),
+            file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static string BuildCachePath(
+        string inputPath,
+        string cacheDirectory,
+        string fingerprint,
+        string suffix)
+    {
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(fingerprint));
+        var hashBuilder = new StringBuilder(hash.Length * 2);
+        foreach (var value in hash)
+        {
+            hashBuilder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+        }
+
+        var hashText = hashBuilder.ToString();
+        var safeName = Path.GetFileNameWithoutExtension(inputPath);
+        foreach (var character in Path.GetInvalidFileNameChars())
+        {
+            safeName = safeName.Replace(character, '_');
+        }
+
+        if (safeName.Length > 48)
+        {
+            safeName = safeName.Substring(0, 48);
+        }
+
+        return Path.Combine(
+            cacheDirectory,
+            $"{safeName}{suffix}-{hashText.Substring(0, 20)}.xbimmesh");
+    }
+
+    private static bool IsMeshFileValid(string path, int expectedVersion)
+    {
+        if (!IsFileReady(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+            return stream.Length >= sizeof(uint) + sizeof(int) &&
+                   reader.ReadUInt32() == MeshFileMagic &&
+                   reader.ReadInt32() == expectedVersion;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void WriteOptimizedHeader(
+        BinaryWriter writer,
+        double metresPerUnit,
+        double originX,
+        double originY,
+        double originZ,
+        IReadOnlyDictionary<int, IfcMaterialStyle> styles,
+        IReadOnlyList<IfcHierarchyNode> hierarchy,
+        int meshCount)
+    {
+        writer.Write(MeshFileMagic);
+        writer.Write(OptimizedMeshFileVersion);
+        writer.Write(0L);
+        writer.Write(metresPerUnit);
+        writer.Write(originX);
+        writer.Write(originY);
+        writer.Write(originZ);
+
+        writer.Write(styles.Count);
+        foreach (var pair in styles)
+        {
+            var style = pair.Value;
+            writer.Write(style.Label);
+            writer.Write(style.Name ?? string.Empty);
+            writer.Write(style.Diffuse.r);
+            writer.Write(style.Diffuse.g);
+            writer.Write(style.Diffuse.b);
+            writer.Write(style.Diffuse.a);
+            writer.Write(style.Specular.r);
+            writer.Write(style.Specular.g);
+            writer.Write(style.Specular.b);
+            writer.Write(style.Smoothness);
+        }
+
+        writer.Write(hierarchy.Count);
+        foreach (var node in hierarchy)
+        {
+            writer.Write(node.Label);
+            writer.Write(node.ParentLabel);
+            writer.Write(node.Name ?? string.Empty);
+            writer.Write(node.IfcType ?? string.Empty);
+            writer.Write(node.GlobalId ?? string.Empty);
+            writer.Write(node.Properties.Count);
+            foreach (var property in node.Properties)
+            {
+                writer.Write(property.Key ?? string.Empty);
+                writer.Write(property.Value ?? string.Empty);
+            }
+        }
+
+        writer.Write(meshCount);
+    }
+
+    private static void WriteOptimizedMesh(
+        BinaryWriter writer,
+        string objectName,
+        int productLabel,
+        Mesh mesh,
+        IReadOnlyList<int> styleLabels)
+    {
+        writer.Write(objectName ?? string.Empty);
+        writer.Write(productLabel);
+
+        var vertices = mesh.vertices;
+        writer.Write(vertices.Length);
+        foreach (var vertex in vertices)
+        {
+            writer.Write(vertex.x);
+            writer.Write(vertex.z);
+            writer.Write(vertex.y);
+        }
+
+        var normals = mesh.normals;
+        writer.Write(normals.Length);
+        foreach (var normal in normals)
+        {
+            writer.Write(normal.x);
+            writer.Write(normal.z);
+            writer.Write(normal.y);
+        }
+
+        var uvs = mesh.uv;
+        writer.Write(uvs.Length);
+        foreach (var uv in uvs)
+        {
+            writer.Write(uv.x);
+            writer.Write(uv.y);
+        }
+
+        var tangents = mesh.tangents;
+        writer.Write(tangents.Length);
+        foreach (var tangent in tangents)
+        {
+            writer.Write(tangent.x);
+            writer.Write(tangent.z);
+            writer.Write(tangent.y);
+            writer.Write(-tangent.w);
+        }
+
+        writer.Write(mesh.subMeshCount);
+        for (var subMeshIndex = 0;
+             subMeshIndex < mesh.subMeshCount;
+             subMeshIndex++)
+        {
+            writer.Write(styleLabels[subMeshIndex]);
+            var triangles = mesh.GetTriangles(subMeshIndex);
+            writer.Write(triangles.Length);
+            for (var index = 0; index + 2 < triangles.Length; index += 3)
+            {
+                writer.Write(triangles[index]);
+                writer.Write(triangles[index + 2]);
+                writer.Write(triangles[index + 1]);
+            }
+        }
+    }
+
+    private static void CommitOptimizedCache(
+        string partialPath,
+        string cachePath)
+    {
+        try
+        {
+            if (File.Exists(cachePath))
+            {
+                File.Delete(cachePath);
+            }
+
+            File.Move(partialPath, cachePath);
+        }
+        catch (Exception exception)
+        {
+            DeleteTemporaryFile(partialPath);
+            Debug.LogWarning(
+                $"Could not store the optimized IFC mesh cache: " +
+                exception.Message);
+        }
+    }
+
+    private sealed class OptimizedMeshCacheWriter : IDisposable
+    {
+        private readonly string partialPath;
+        private readonly string cachePath;
+        private FileStream stream;
+        private BinaryWriter writer;
+        private bool committed;
+
+        public BinaryWriter Writer => writer;
+
+        public OptimizedMeshCacheWriter(
+            string outputPartialPath,
+            string outputCachePath)
+        {
+            partialPath = outputPartialPath;
+            cachePath = outputCachePath;
+            stream = File.Create(partialPath);
+            writer = new BinaryWriter(stream, Encoding.UTF8, true);
+        }
+
+        public void Commit(long sourceTriangleCount)
+        {
+            if (committed || writer == null)
+            {
+                return;
+            }
+
+            writer.Flush();
+            stream.Position = sizeof(uint) + sizeof(int);
+            writer.Write(sourceTriangleCount);
+            writer.Flush();
+            writer.Dispose();
+            stream.Dispose();
+            writer = null;
+            stream = null;
+            committed = true;
+            CommitOptimizedCache(partialPath, cachePath);
+        }
+
+        public void Dispose()
+        {
+            writer?.Dispose();
+            stream?.Dispose();
+            writer = null;
+            stream = null;
+            if (!committed)
+            {
+                DeleteTemporaryFile(partialPath);
+            }
+        }
+    }
+
+    private static void TryTerminateProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning(
+                $"Could not terminate the timed-out xBIM converter: " +
+                exception.Message);
+        }
+    }
+
     private void OnValidate()
     {
         LinearDeflection = linearDeflectionMillimetres;
         AngularDeflection = angularDeflectionDegrees;
+        minimumSimplificationTriangles = Mathf.Max(12, minimumSimplificationTriangles);
+        aggressiveSimplificationTriangles = Mathf.Max(
+            minimumSimplificationTriangles,
+            aggressiveSimplificationTriangles);
+        extremeSimplificationTriangles = Mathf.Max(
+            aggressiveSimplificationTriangles,
+            extremeSimplificationTriangles);
+        standardMeshQuality = Mathf.Clamp(standardMeshQuality, 0.05f, 1f);
+        aggressiveMeshQuality = Mathf.Clamp(
+            aggressiveMeshQuality,
+            0.03f,
+            standardMeshQuality);
+        extremeMeshQuality = Mathf.Clamp(
+            extremeMeshQuality,
+            0.02f,
+            aggressiveMeshQuality);
+        broadSurfaceMeshQuality = Mathf.Clamp(
+            broadSurfaceMeshQuality,
+            0.02f,
+            standardMeshQuality);
         meshesPerFrame = Mathf.Max(1, meshesPerFrame);
+        sourceTrianglesPerFrame = Mathf.Max(1_000, sourceTrianglesPerFrame);
+        converterTimeoutSeconds = Mathf.Max(30f, converterTimeoutSeconds);
     }
 
     private static string ReadSafeString(BinaryReader reader, string label)

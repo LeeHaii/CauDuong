@@ -106,17 +106,36 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                              gameObject.AddComponent<IfcOperationsDatabase>();
         ResolveDependencies();
 
-        foreach (var definition in IfcInfrastructureClassifier.Definitions)
-        {
-            categoryVisibility[definition.Category] = true;
-        }
+        EnsureCategoryVisibilityDefaults();
     }
 
     private void OnEnable()
     {
+        selectionPropertyBlock ??= new MaterialPropertyBlock();
+        document ??= GetComponent<UIDocument>();
+        measurementController ??= GetComponent<IfcMeasurementController>();
+        operationsDatabase ??= GetComponent<IfcOperationsDatabase>();
+
+        if (uiBound && !HasBoundUi())
+        {
+            uiBound = false;
+            statusButtons.Clear();
+            assetRows.Clear();
+        }
+
+        EnsureCategoryVisibilityDefaults();
         ResolveDependencies();
         SubscribeToLoader();
         SubscribeToMeasurement();
+        BindUi();
+    }
+
+    private void EnsureCategoryVisibilityDefaults()
+    {
+        foreach (var definition in IfcInfrastructureClassifier.Definitions)
+        {
+            categoryVisibility.TryAdd(definition.Category, true);
+        }
     }
 
     private void Start()
@@ -310,6 +329,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         uiBound = true;
         BuildModelList();
         RefreshDashboard();
+    }
+
+    private bool HasBoundUi()
+    {
+        return root != null &&
+               totalCountLabel != null &&
+               layerCountButton != null &&
+               categoryList != null &&
+               propertyList != null;
     }
 
     private void RegisterStatusButton(string elementName, IfcOperationalStatus? status)
@@ -612,7 +640,13 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void RefreshDashboard()
     {
-        if (!uiBound)
+        if (!uiBound || !HasBoundUi())
+        {
+            uiBound = false;
+            BindUi();
+        }
+
+        if (!uiBound || !HasBoundUi())
         {
             return;
         }

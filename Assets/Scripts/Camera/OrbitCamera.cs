@@ -50,6 +50,7 @@ public sealed class OrbitCamera : MonoBehaviour
         dashboardDocument ??= dashboard != null
             ? dashboard.GetComponent<UnityEngine.UIElements.UIDocument>()
             : null;
+        Debug.Log(SystemInfo.graphicsDeviceName);
     }
 
     private void OnEnable()
