@@ -1,190 +1,173 @@
-<?xml version="1.0" encoding="utf-8"?>
-<ui:UXML xmlns:ui="UnityEngine.UIElements">
-    <ui:Style src="IfcOperationsDashboard.uss" />
-    <ui:VisualElement name="dashboard-root" class="dashboard-root" picking-mode="Ignore">
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="False">
+    <Style src="project://database/Assets/UI/IfcOperations/IfcOperationsDashboard.uss?fileID=7433441132597879392&amp;guid=f7c178696f66d0a48a3bfbbea2a920fc&amp;type=3#IfcOperationsDashboard"/>
+    <ui:VisualElement name="dashboard-root" picking-mode="Ignore" class="dashboard-root">
         <ui:VisualElement name="top-toolbar" class="top-toolbar hud-interactive">
             <ui:VisualElement class="brand-block">
-                <ui:Label text="P" class="brand-mark" />
+                <ui:Label text="P" class="brand-mark"/>
                 <ui:VisualElement class="brand-copy">
-                    <ui:Label text="BIM-GIS InfraOps" class="brand-title" />
-                    <ui:Label text="Quản Lý Vận Hành Hạ Tầng Giao Thông" class="brand-subtitle" />
+                    <ui:Label text="BIM-GIS InfraOps" class="brand-title"/>
+                    <ui:Label text="Quản Lý Vận Hành Hạ Tầng Giao Thông" class="brand-subtitle"/>
                 </ui:VisualElement>
             </ui:VisualElement>
             <ui:VisualElement class="toolbar-actions">
-                <ui:DropdownField name="map-source" class="map-dropdown toolbar-secondary" value="OpenStreetMap" />
-                <ui:Button name="frame-model-button" text="Mô Hình Tuyến Vành Đai 3" class="toolbar-button toolbar-button-primary" />
-                <ui:Button name="browse-ifc-button" text="Tải File .IFC (Nhiều File)" class="toolbar-button" />
-                <ui:Button name="layer-button" text="Lớp IFC (0)" class="toolbar-button toolbar-button-primary" />
-                <ui:Button name="measure-button" text="Đo Đạc 3D" class="toolbar-button toolbar-secondary" />
-                <ui:Button name="export-button" text="Export &amp; Báo Cáo" class="toolbar-button toolbar-button-export" />
+                <ui:DropdownField name="map-source" value="OpenStreetMap" class="map-dropdown toolbar-secondary" style="padding-left: 0; padding-right: 0; margin-left: 8px;"/>
+                <ui:Button name="frame-model-button" text="Mô Hình Tuyến Vành Đai 3" class="toolbar-button toolbar-button-primary"/>
+                <ui:Button name="browse-ifc-button" text="Tải File .IFC (Nhiều File)" class="toolbar-button"/>
+                <ui:Button name="layer-button" text="Lớp IFC (0)" class="toolbar-button toolbar-button-primary"/>
+                <ui:Button name="measure-button" text="Đo Đạc 3D" class="toolbar-button toolbar-secondary"/>
+                <ui:Button name="export-button" text="Export &amp; Báo Cáo" class="toolbar-button toolbar-button-export"/>
             </ui:VisualElement>
         </ui:VisualElement>
-
         <ui:VisualElement name="left-panel" class="side-panel left-panel hud-interactive">
             <ui:VisualElement class="panel-heading-row">
-                <ui:Label text="Cấu Trúc Hạ Tầng (IFC)" class="panel-heading" />
-                <ui:Label name="total-count" text="0 cấu kiện" class="count-badge" />
+                <ui:Label text="Cấu Trúc Hạ Tầng (IFC)" class="panel-heading"/>
+                <ui:Label name="total-count" text="0 cấu kiện" class="count-badge"/>
             </ui:VisualElement>
-            <ui:Label text="LỌC THEO TRẠNG THÁI VẬN HÀNH" class="section-kicker" />
+            <ui:Label text="LỌC THEO TRẠNG THÁI VẬN HÀNH" class="section-kicker"/>
             <ui:VisualElement class="filter-grid">
-                <ui:Button name="filter-all" text="Tất cả  0" class="filter-button filter-button-active" />
-                <ui:Button name="filter-operational" text="Tốt  0" class="filter-button filter-operational" />
-                <ui:Button name="filter-warning" text="Bảo trì  0" class="filter-button filter-warning" />
-                <ui:Button name="filter-critical" text="Hỏng hóc  0" class="filter-button filter-critical" />
-                <ui:Button name="filter-repairing" text="Đang sửa  0" class="filter-button filter-repairing" />
+                <ui:Button name="filter-all" text="Tất cả  0" class="filter-button filter-button-active"/>
+                <ui:Button name="filter-operational" text="Tốt  0" class="filter-button filter-operational"/>
+                <ui:Button name="filter-warning" text="Bảo trì  0" class="filter-button filter-warning"/>
+                <ui:Button name="filter-critical" text="Hỏng hóc  0" class="filter-button filter-critical"/>
+                <ui:Button name="filter-repairing" text="Đang sửa  0" class="filter-button filter-repairing"/>
             </ui:VisualElement>
-            <ui:Label text="DANH SÁCH LỚP CẤU KIỆN IFC" class="section-kicker section-kicker-spaced" />
-            <ui:ScrollView name="category-scroll" class="category-scroll" mode="Vertical">
-                <ui:VisualElement name="category-list" class="category-list" />
+            <ui:Label text="DANH SÁCH LỚP CẤU KIỆN IFC" class="section-kicker section-kicker-spaced"/>
+            <ui:ScrollView name="category-scroll" mode="Vertical" mouse-wheel-scroll-size="4" class="category-scroll">
+                <ui:VisualElement name="category-list" class="category-list"/>
             </ui:ScrollView>
         </ui:VisualElement>
-
         <ui:VisualElement name="details-panel" class="side-panel details-panel hud-interactive">
             <ui:VisualElement class="panel-heading-row">
-                <ui:Label text="Chi Tiết Cấu Kiện &amp; Vận Hành" class="panel-heading" />
-                <ui:Button name="close-details-button" text="×" class="icon-button close-button" tooltip="Đóng bảng chi tiết" />
+                <ui:Label text="Chi Tiết Cấu Kiện &amp; Vận Hành" class="panel-heading"/>
+                <ui:Button name="close-details-button" text="×" tooltip="Đóng bảng chi tiết" class="icon-button close-button"/>
             </ui:VisualElement>
-            <ui:ScrollView name="details-scroll" class="details-scroll" mode="Vertical">
+            <ui:ScrollView name="details-scroll" mode="Vertical" mouse-wheel-scroll-size="4" class="details-scroll">
                 <ui:VisualElement class="identity-card">
                     <ui:VisualElement class="identity-top-row">
-                        <ui:Label name="detail-ifc-type" text="IfcProduct" class="ifc-type-badge" />
-                        <ui:VisualElement name="color-swatch" class="color-swatch" tooltip="Màu RGBA nguyên bản" />
+                        <ui:Label name="detail-ifc-type" text="IfcProduct" class="ifc-type-badge"/>
+                        <ui:VisualElement name="color-swatch" tooltip="Màu RGBA nguyên bản" class="color-swatch"/>
                     </ui:VisualElement>
-                    <ui:Label name="detail-name" text="Chưa chọn cấu kiện" class="detail-name" />
-                    <ui:Label name="detail-global-id" text="GlobalID: -" class="identity-line" />
-                    <ui:Label name="detail-express-id" text="ExpressID: -" class="identity-line identity-link" />
+                    <ui:Label name="detail-name" text="Chưa chọn cấu kiện" class="detail-name"/>
+                    <ui:Label name="detail-global-id" text="GlobalID: -" class="identity-line"/>
+                    <ui:Label name="detail-express-id" text="ExpressID: -" class="identity-line identity-link"/>
                 </ui:VisualElement>
-
-                <ui:Label text="Tên Cấu Kiện Hiển Thị" class="field-label" />
-                <ui:TextField name="display-name-input" class="dashboard-input" />
-                <ui:Label text="Ghi Chú Vận Hành / Bảo Trì" class="field-label" />
-                <ui:TextField name="maintenance-note-input" class="dashboard-input note-input" multiline="true" />
-                <ui:Label text="Trạng Thái Vận Hành Tức Thời" class="field-label" />
-                <ui:DropdownField name="status-dropdown" class="dashboard-input status-dropdown" />
-                <ui:Button name="save-operations-button" text="Lưu Thay Đổi &amp; Cập Nhật Mô Hình 3D" class="save-button" />
-
+                <ui:Label text="Tên Cấu Kiện Hiển Thị" class="field-label"/>
+                <ui:TextField name="display-name-input" class="dashboard-input"/>
+                <ui:Label text="Ghi Chú Vận Hành / Bảo Trì" class="field-label"/>
+                <ui:TextField name="maintenance-note-input" multiline="true" class="dashboard-input note-input"/>
+                <ui:Label text="Trạng Thái Vận Hành Tức Thời" class="field-label"/>
+                <ui:DropdownField name="status-dropdown" class="dashboard-input status-dropdown"/>
+                <ui:Button name="save-operations-button" text="Lưu Thay Đổi &amp; Cập Nhật Mô Hình 3D" class="save-button"/>
                 <ui:VisualElement class="property-heading-row">
-                    <ui:Label name="property-set-count" text="PropertySets (1)" class="property-heading" />
-                    <ui:Button name="add-custom-property-button" text="+ Thêm Thuộc Tính" class="add-property-button" />
+                    <ui:Label name="property-set-count" text="PropertySets (1)" class="property-heading"/>
+                    <ui:Button name="add-custom-property-button" text="+ Thêm Thuộc Tính" class="add-property-button"/>
                 </ui:VisualElement>
-                <ui:VisualElement name="property-list" class="property-list" />
+                <ui:VisualElement name="property-list" class="property-list"/>
             </ui:ScrollView>
         </ui:VisualElement>
-
         <ui:VisualElement name="model-manager-popup" class="toolbar-popup model-manager-popup hud-interactive">
             <ui:VisualElement class="popup-heading-row">
-                <ui:Label text="DANH SÁCH FILE IFC ĐANG MỞ" class="popup-heading" />
-                <ui:Button name="clear-models-button" text="Xóa tất cả" class="popup-danger-link" />
+                <ui:Label text="DANH SÁCH FILE IFC ĐANG MỞ" class="popup-heading"/>
+                <ui:Button name="clear-models-button" text="Xóa tất cả" class="popup-danger-link"/>
             </ui:VisualElement>
-            <ui:VisualElement name="model-list" class="model-list" />
+            <ui:VisualElement name="model-list" class="model-list"/>
         </ui:VisualElement>
-
         <ui:VisualElement name="measurement-popup" class="toolbar-popup measurement-popup hud-interactive">
-            <ui:Label text="CÔNG CỤ ĐO ĐẠC HẠ TẦNG" class="popup-heading" />
-            <ui:Button name="measure-distance-button" text="Đo Khoảng Cách                 Distance" class="popup-command" />
-            <ui:Button name="measure-height-button" text="Đo Chiều Cao                       Height" class="popup-command" />
-            <ui:Button name="measure-area-button" text="Đo Diện Tích                            Area" class="popup-command" />
-            <ui:VisualElement class="popup-divider" />
-            <ui:Button name="clear-measurements-button" text="Xóa Tất Cả Phép Đo" class="popup-command popup-danger-command" />
+            <ui:Label text="CÔNG CỤ ĐO ĐẠC HẠ TẦNG" class="popup-heading"/>
+            <ui:Button name="measure-distance-button" text="Đo Khoảng Cách                 Distance" class="popup-command"/>
+            <ui:Button name="measure-height-button" text="Đo Chiều Cao                       Height" class="popup-command"/>
+            <ui:Button name="measure-area-button" text="Đo Diện Tích                            Area" class="popup-command"/>
+            <ui:VisualElement class="popup-divider"/>
+            <ui:Button name="clear-measurements-button" text="Xóa Tất Cả Phép Đo" class="popup-command popup-danger-command"/>
         </ui:VisualElement>
-
         <ui:VisualElement name="export-popup" class="toolbar-popup export-popup hud-interactive">
-            <ui:Button name="export-csv-button" text="Export File Excel (.CSV)" class="popup-command" />
-            <ui:Button name="export-json-button" text="Export Dữ Liệu BIM (.JSON)" class="popup-command" />
-            <ui:Button name="export-pdf-button" text="Dashboard Báo Cáo Vận Hành" class="popup-command" />
+            <ui:Button name="export-csv-button" text="Export File Excel (.CSV)" class="popup-command"/>
+            <ui:Button name="export-json-button" text="Export Dữ Liệu BIM (.JSON)" class="popup-command"/>
+            <ui:Button name="export-pdf-button" text="Dashboard Báo Cáo Vận Hành" class="popup-command"/>
         </ui:VisualElement>
-
         <ui:VisualElement name="custom-property-overlay" class="modal-overlay hud-interactive">
             <ui:VisualElement class="custom-property-dialog modal-surface">
-                <ui:Label name="custom-property-title" text="+ Thêm Thuộc Tính IFC" class="modal-title" />
-                <ui:Label text="Tên Thuộc Tính (Key)" class="modal-field-label" />
-                <ui:TextField name="custom-property-key" class="modal-input" />
-                <ui:Label text="Giá Trị Thuộc Tính (Value)" class="modal-field-label" />
-                <ui:TextField name="custom-property-value" class="modal-input" multiline="true" />
-                <ui:Label name="custom-property-error" text="" class="modal-error" />
+                <ui:Label name="custom-property-title" text="+ Thêm Thuộc Tính IFC" class="modal-title"/>
+                <ui:Label text="Tên Thuộc Tính (Key)" class="modal-field-label"/>
+                <ui:TextField name="custom-property-key" class="modal-input"/>
+                <ui:Label text="Giá Trị Thuộc Tính (Value)" class="modal-field-label"/>
+                <ui:TextField name="custom-property-value" multiline="true" class="modal-input"/>
+                <ui:Label name="custom-property-error" text="" class="modal-error"/>
                 <ui:VisualElement class="modal-actions">
-                    <ui:Button name="cancel-custom-property-button" text="Hủy" class="modal-button modal-button-secondary" />
-                    <ui:Button name="save-custom-property-button" text="Thêm" class="modal-button modal-button-primary" />
+                    <ui:Button name="cancel-custom-property-button" text="Hủy" class="modal-button modal-button-secondary"/>
+                    <ui:Button name="save-custom-property-button" text="Thêm" class="modal-button modal-button-primary"/>
                 </ui:VisualElement>
             </ui:VisualElement>
         </ui:VisualElement>
-
         <ui:VisualElement name="analytics-overlay" class="analytics-overlay hud-interactive">
             <ui:VisualElement class="analytics-shell">
                 <ui:VisualElement class="analytics-header">
                     <ui:VisualElement>
-                        <ui:Label text="Báo Cáo Vận Hành &amp; Bảo Trì" class="analytics-title" />
-                        <ui:Label name="analytics-generated-at" text="Dữ liệu tổng hợp hiện tại" class="analytics-subtitle" />
+                        <ui:Label text="Báo Cáo Vận Hành &amp; Bảo Trì" class="analytics-title"/>
+                        <ui:Label name="analytics-generated-at" text="Dữ liệu tổng hợp hiện tại" class="analytics-subtitle"/>
                     </ui:VisualElement>
                     <ui:VisualElement class="analytics-header-actions">
-                        <ui:Button name="analytics-export-pdf-button" text="Xuất Báo Cáo PDF" class="analytics-export-button" />
-                        <ui:Button name="close-analytics-button" text="×" class="analytics-close-button" tooltip="Đóng dashboard báo cáo" />
+                        <ui:Button name="analytics-export-pdf-button" text="Xuất Báo Cáo PDF" class="analytics-export-button"/>
+                        <ui:Button name="close-analytics-button" text="×" tooltip="Đóng dashboard báo cáo" class="analytics-close-button"/>
                     </ui:VisualElement>
                 </ui:VisualElement>
-
-                <ui:ScrollView class="analytics-scroll" mode="Vertical">
+                <ui:ScrollView mode="Vertical" class="analytics-scroll">
                     <ui:VisualElement class="analytics-kpi-row">
                         <ui:VisualElement class="analytics-kpi analytics-kpi-total">
-                            <ui:Label text="TỔNG CẤU KIỆN" class="analytics-kpi-label" />
-                            <ui:Label name="analytics-total-count" text="0" class="analytics-kpi-value" />
+                            <ui:Label text="TỔNG CẤU KIỆN" class="analytics-kpi-label"/>
+                            <ui:Label name="analytics-total-count" text="0" class="analytics-kpi-value"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="analytics-kpi analytics-kpi-operational">
-                            <ui:Label text="HOẠT ĐỘNG TỐT" class="analytics-kpi-label" />
-                            <ui:Label name="analytics-operational-count" text="0" class="analytics-kpi-value" />
+                            <ui:Label text="HOẠT ĐỘNG TỐT" class="analytics-kpi-label"/>
+                            <ui:Label name="analytics-operational-count" text="0" class="analytics-kpi-value"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="analytics-kpi analytics-kpi-warning">
-                            <ui:Label text="CẦN BẢO TRÌ" class="analytics-kpi-label" />
-                            <ui:Label name="analytics-warning-count" text="0" class="analytics-kpi-value" />
+                            <ui:Label text="CẦN BẢO TRÌ" class="analytics-kpi-label"/>
+                            <ui:Label name="analytics-warning-count" text="0" class="analytics-kpi-value"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="analytics-kpi analytics-kpi-critical">
-                            <ui:Label text="HỎNG HÓC" class="analytics-kpi-label" />
-                            <ui:Label name="analytics-critical-count" text="0" class="analytics-kpi-value" />
+                            <ui:Label text="HỎNG HÓC" class="analytics-kpi-label"/>
+                            <ui:Label name="analytics-critical-count" text="0" class="analytics-kpi-value"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="analytics-kpi analytics-kpi-repairing">
-                            <ui:Label text="ĐANG SỬA CHỮA" class="analytics-kpi-label" />
-                            <ui:Label name="analytics-repairing-count" text="0" class="analytics-kpi-value" />
+                            <ui:Label text="ĐANG SỬA CHỮA" class="analytics-kpi-label"/>
+                            <ui:Label name="analytics-repairing-count" text="0" class="analytics-kpi-value"/>
                         </ui:VisualElement>
                     </ui:VisualElement>
-
                     <ui:VisualElement class="analytics-main-row">
                         <ui:VisualElement class="analytics-panel analytics-status-panel">
-                            <ui:Label text="Phân Bố Trạng Thái Vận Hành" class="analytics-panel-title" />
+                            <ui:Label text="Phân Bố Trạng Thái Vận Hành" class="analytics-panel-title"/>
                             <ui:VisualElement class="analytics-donut-layout">
-                                <ui:VisualElement name="analytics-status-chart" class="analytics-donut-chart" />
-                                <ui:VisualElement name="analytics-status-legend" class="analytics-legend" />
+                                <ui:VisualElement name="analytics-status-chart" class="analytics-donut-chart"/>
+                                <ui:VisualElement name="analytics-status-legend" class="analytics-legend"/>
                             </ui:VisualElement>
                         </ui:VisualElement>
-
                         <ui:VisualElement class="analytics-panel analytics-category-panel">
-                            <ui:Label text="Trạng Thái Theo Nhóm Hạ Tầng" class="analytics-panel-title" />
-                            <ui:VisualElement name="analytics-category-chart" class="analytics-column-chart" />
-                            <ui:VisualElement name="analytics-category-legend" class="analytics-inline-legend" />
+                            <ui:Label text="Trạng Thái Theo Nhóm Hạ Tầng" class="analytics-panel-title"/>
+                            <ui:VisualElement name="analytics-category-chart" class="analytics-column-chart"/>
+                            <ui:VisualElement name="analytics-category-legend" class="analytics-inline-legend"/>
                         </ui:VisualElement>
                     </ui:VisualElement>
-
                     <ui:VisualElement class="analytics-panel analytics-source-panel">
                         <ui:VisualElement class="analytics-panel-heading-row">
-                            <ui:Label text="Phân Bố Cấu Kiện Theo File IFC" class="analytics-panel-title" />
-                            <ui:Label name="analytics-model-count" text="0 mô hình" class="analytics-model-count" />
+                            <ui:Label text="Phân Bố Cấu Kiện Theo File IFC" class="analytics-panel-title"/>
+                            <ui:Label name="analytics-model-count" text="0 mô hình" class="analytics-model-count"/>
                         </ui:VisualElement>
-                        <ui:VisualElement name="analytics-source-chart" class="analytics-source-chart" />
+                        <ui:VisualElement name="analytics-source-chart" class="analytics-source-chart"/>
                     </ui:VisualElement>
                 </ui:ScrollView>
             </ui:VisualElement>
         </ui:VisualElement>
-
         <ui:VisualElement name="status-strip" class="status-strip hud-interactive">
-            <ui:Label name="import-status" text="Sẵn sàng." class="status-text" />
+            <ui:Label name="import-status" text="Sẵn sàng." class="status-text"/>
         </ui:VisualElement>
-
         <ui:VisualElement name="measurement-hud" class="measurement-hud hud-interactive">
-            <ui:Label name="measurement-hud-title" text="ĐO ĐẠC 3D" class="measurement-hud-title" />
-            <ui:Label name="measurement-hud-value" text="Chọn điểm trên mô hình IFC." class="measurement-hud-value" />
+            <ui:Label name="measurement-hud-title" text="ĐO ĐẠC 3D" class="measurement-hud-title"/>
+            <ui:Label name="measurement-hud-value" text="Chọn điểm trên mô hình IFC." class="measurement-hud-value"/>
         </ui:VisualElement>
-
         <ui:VisualElement name="loading-overlay" class="loading-overlay hud-interactive">
-            <ui:VisualElement name="loading-spinner" class="loading-spinner" />
-            <ui:Label name="loading-message" text="Đang nạp dữ liệu IFC..." class="loading-message" />
+            <ui:VisualElement name="loading-spinner" class="loading-spinner"/>
+            <ui:Label name="loading-message" text="Đang nạp dữ liệu IFC..." class="loading-message"/>
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

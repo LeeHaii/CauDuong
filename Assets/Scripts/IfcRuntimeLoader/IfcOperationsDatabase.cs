@@ -211,6 +211,113 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
                DeleteCustomPropertyInternal(sourceFile, elementKey, propertyKey);
     }
 
+    public bool TryLoadPropertyOverrides(
+        string sourceFile,
+        string elementKey,
+        IDictionary<string, string> values,
+        ISet<string> deletedProperties)
+    {
+        if (!IsAvailable || values == null || deletedProperties == null)
+        {
+            return false;
+        }
+
+        values.Clear();
+        deletedProperties.Clear();
+        const string sql =
+            "SELECT property_key, property_value, is_deleted " +
+            "FROM ifc_property_overrides " +
+            "WHERE source_file = ?1 AND element_key = ?2;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            while (sqlite3_step(statement) == SqliteRow)
+            {
+                var propertyKey = ReadColumnText(statement, 0);
+                if (sqlite3_column_int(statement, 2) != 0)
+                {
+                    deletedProperties.Add(propertyKey);
+                }
+                else
+                {
+                    values[propertyKey] = ReadColumnText(statement, 1);
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
+    public bool SavePropertyOverride(
+        string sourceFile,
+        string elementKey,
+        string propertyKey,
+        string propertyValue)
+    {
+        return UpsertPropertyOverride(
+            sourceFile,
+            elementKey,
+            propertyKey,
+            propertyValue,
+            false);
+    }
+
+    public bool DeleteElementProperty(
+        string sourceFile,
+        string elementKey,
+        string propertyKey)
+    {
+        return UpsertPropertyOverride(
+            sourceFile,
+            elementKey,
+            propertyKey,
+            string.Empty,
+            true);
+    }
+
+    public bool ResetPropertyOverride(
+        string sourceFile,
+        string elementKey,
+        string propertyKey)
+    {
+        if (!IsAvailable || string.IsNullOrWhiteSpace(propertyKey))
+        {
+            return false;
+        }
+
+        const string sql =
+            "DELETE FROM ifc_property_overrides " +
+            "WHERE source_file = ?1 AND element_key = ?2 AND property_key = ?3;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            BindText(statement, 3, propertyKey);
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
     private void Open()
     {
         if (database != IntPtr.Zero)
@@ -256,6 +363,13 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
                 "source_file TEXT NOT NULL, element_key TEXT NOT NULL, " +
                 "property_key TEXT NOT NULL COLLATE NOCASE, " +
                 "property_value TEXT NOT NULL, updated_at TEXT NOT NULL, " +
+                "PRIMARY KEY (source_file, element_key, property_key));");
+            Execute(
+                "CREATE TABLE IF NOT EXISTS ifc_property_overrides (" +
+                "source_file TEXT NOT NULL, element_key TEXT NOT NULL, " +
+                "property_key TEXT NOT NULL COLLATE NOCASE, " +
+                "property_value TEXT NOT NULL, is_deleted INTEGER NOT NULL, " +
+                "updated_at TEXT NOT NULL, " +
                 "PRIMARY KEY (source_file, element_key, property_key));");
         }
         catch (Exception exception)
@@ -360,6 +474,44 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
             BindText(statement, 1, sourceFile);
             BindText(statement, 2, elementKey);
             BindText(statement, 3, propertyKey);
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
+    private bool UpsertPropertyOverride(
+        string sourceFile,
+        string elementKey,
+        string propertyKey,
+        string propertyValue,
+        bool isDeleted)
+    {
+        if (!IsAvailable || string.IsNullOrWhiteSpace(propertyKey))
+        {
+            return false;
+        }
+
+        const string sql =
+            "INSERT OR REPLACE INTO ifc_property_overrides " +
+            "(source_file, element_key, property_key, property_value, is_deleted, updated_at) " +
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6);";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            BindText(statement, 3, propertyKey.Trim());
+            BindText(statement, 4, propertyValue ?? string.Empty);
+            sqlite3_bind_int(statement, 5, isDeleted ? 1 : 0);
+            BindText(statement, 6, DateTime.Now.ToString("o"));
             return sqlite3_step(statement) == SqliteDone;
         }
         finally

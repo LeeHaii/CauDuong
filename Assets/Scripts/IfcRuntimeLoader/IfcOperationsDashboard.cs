@@ -107,6 +107,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private bool startupLoading;
     private bool uiBound;
     private string editingCustomPropertyKey;
+    private string editingBuiltInPropertyKey;
     private DonutChartElement statusDonutChart;
 
     private static readonly Color[] StatusChartColors =
@@ -928,7 +929,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void ShowDetails(IfcAssetRecord record)
     {
-        EnsureCustomPropertiesLoaded(record);
+        EnsureElementPropertiesLoaded(record);
 
         detailsPanel.style.display = DisplayStyle.Flex;
         detailTypeLabel.text = record.IfcType;
@@ -943,24 +944,28 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         propertyList.Clear();
         propertySetCountLabel.text = $"PropertySets ({(record.CustomProperties.Count > 0 ? 2 : 1)})";
         AddPropertySetHeading("Pset_VD3InfraOps");
-        AddPropertyRow("Dự án", ProjectName);
-        AddPropertyRow("Nguồn File", record.SourceFile);
-        AddPropertyRow("Mã IFC", record.IfcType);
-        AddPropertyRow("IFC GlobalId gốc", EmptyFallback(record.IfcGlobalId));
-        AddPropertyRow("Màu RGBA", FormatColor(record.Color));
-        AddPropertyRow("Số tam giác 3D", $"{record.TriangleCount:N0} tam giác");
-        AddPropertyRow(
+        AddBuiltInPropertyRow(record, "Dự án", ProjectName);
+        AddBuiltInPropertyRow(record, "Nguồn File", record.SourceFile);
+        AddBuiltInPropertyRow(record, "Mã IFC", record.IfcType);
+        AddBuiltInPropertyRow(record, "IFC GlobalId gốc", EmptyFallback(record.IfcGlobalId));
+        AddBuiltInPropertyRow(record, "Màu RGBA", FormatColor(record.Color));
+        AddBuiltInPropertyRow(record, "Số tam giác 3D", $"{record.TriangleCount:N0} tam giác");
+        AddBuiltInPropertyRow(
+            record,
             "MeshData",
             $"{record.VertexCount:N0} vertices | {record.NormalCount:N0} normals | " +
             $"{record.IndexCount:N0} indices");
-        AddPropertyRow(
+        AddBuiltInPropertyRow(
+            record,
             "Kích thước bao (X x Y x Z)",
             $"{record.Bounds.size.x:F2}m x {record.Bounds.size.y:F2}m x " +
             $"{record.Bounds.size.z:F2}m");
-        AddPropertyRow(
+        AddBuiltInPropertyRow(
+            record,
             "Tọa độ dự án VN2000",
             $"X: {record.Vn2000X:F2}, Y: {record.Vn2000Y:F2}");
-        AddPropertyRow(
+        AddBuiltInPropertyRow(
+            record,
             "Thời gian cập nhật",
             EmptyFallback(record.State.UpdatedAt, "Chưa cập nhật"));
 
@@ -978,6 +983,41 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                     () => DeleteCustomProperty(property.Key));
             }
         }
+    }
+
+    private void AddBuiltInPropertyRow(
+        IfcAssetRecord record,
+        string key,
+        string sourceValue)
+    {
+        if (record.DeletedProperties.Contains(key))
+        {
+            return;
+        }
+
+        var displayedValue = record.PropertyOverrides.TryGetValue(key, out var overrideValue)
+            ? overrideValue
+            : sourceValue;
+        AddPropertyRow(
+            key,
+            displayedValue,
+            () => OpenEditBuiltInProperty(key, displayedValue),
+            () => DeleteBuiltInProperty(key));
+    }
+
+    private void EnsureElementPropertiesLoaded(IfcAssetRecord record)
+    {
+        EnsureCustomPropertiesLoaded(record);
+        if (record == null || record.PropertyOverridesLoaded || operationsDatabase == null)
+        {
+            return;
+        }
+
+        record.PropertyOverridesLoaded = operationsDatabase.TryLoadPropertyOverrides(
+            record.SourceFile,
+            GetElementKey(record.Metadata),
+            record.PropertyOverrides,
+            record.DeletedProperties);
     }
 
     private void EnsureCustomPropertiesLoaded(IfcAssetRecord record)
@@ -1064,6 +1104,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
 
         editingCustomPropertyKey = null;
+        editingBuiltInPropertyKey = null;
+        customPropertyKeyInput.SetEnabled(true);
         customPropertyTitle.text = "+ Thêm Thuộc Tính IFC";
         customPropertySaveButton.text = "Thêm";
         customPropertyKeyInput.SetValueWithoutNotify(string.Empty);
@@ -1082,6 +1124,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
 
         editingCustomPropertyKey = propertyKey;
+        editingBuiltInPropertyKey = null;
+        customPropertyKeyInput.SetEnabled(true);
         customPropertyTitle.text = "Sửa Thuộc Tính IFC";
         customPropertySaveButton.text = "Lưu";
         customPropertyKeyInput.SetValueWithoutNotify(propertyKey);
@@ -1091,9 +1135,30 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         customPropertyValueInput.schedule.Execute(customPropertyValueInput.Focus);
     }
 
+    private void OpenEditBuiltInProperty(string propertyKey, string propertyValue)
+    {
+        if (selectedRecord == null)
+        {
+            return;
+        }
+
+        editingCustomPropertyKey = null;
+        editingBuiltInPropertyKey = propertyKey;
+        customPropertyTitle.text = "Sửa Thuộc Tính IFC";
+        customPropertySaveButton.text = "Lưu";
+        customPropertyKeyInput.SetValueWithoutNotify(propertyKey);
+        customPropertyKeyInput.SetEnabled(false);
+        customPropertyValueInput.SetValueWithoutNotify(propertyValue);
+        customPropertyError.text = string.Empty;
+        customPropertyOverlay.style.display = DisplayStyle.Flex;
+        customPropertyValueInput.schedule.Execute(customPropertyValueInput.Focus);
+    }
+
     private void CloseCustomPropertyEditor()
     {
         editingCustomPropertyKey = null;
+        editingBuiltInPropertyKey = null;
+        customPropertyKeyInput?.SetEnabled(true);
         if (customPropertyOverlay != null)
         {
             customPropertyOverlay.style.display = DisplayStyle.None;
@@ -1115,6 +1180,30 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
+        var propertyValue = customPropertyValueInput.value ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(editingBuiltInPropertyKey))
+        {
+            var builtInKey = editingBuiltInPropertyKey;
+            var persistedOverride = operationsDatabase != null &&
+                                      operationsDatabase.SavePropertyOverride(
+                                          selectedRecord.SourceFile,
+                                          GetElementKey(selectedRecord.Metadata),
+                                          builtInKey,
+                                          propertyValue);
+            if (!persistedOverride)
+            {
+                customPropertyError.text = "Không thể lưu thuộc tính vào SQLite.";
+                return;
+            }
+
+            selectedRecord.PropertyOverrides[builtInKey] = propertyValue;
+            selectedRecord.DeletedProperties.Remove(builtInKey);
+            CloseCustomPropertyEditor();
+            ShowDetails(selectedRecord);
+            SetImportStatus($"Đã cập nhật thuộc tính {builtInKey}.");
+            return;
+        }
+
         if (selectedRecord.CustomProperties.ContainsKey(propertyKey) &&
             !string.Equals(propertyKey, editingCustomPropertyKey, StringComparison.OrdinalIgnoreCase))
         {
@@ -1122,7 +1211,6 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
-        var propertyValue = customPropertyValueInput.value ?? string.Empty;
         var persisted = operationsDatabase != null &&
                         operationsDatabase.SaveCustomProperty(
                             selectedRecord.SourceFile,
@@ -1170,6 +1258,30 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         selectedRecord.CustomProperties.Remove(propertyKey);
         ShowDetails(selectedRecord);
         SetImportStatus($"Đã xóa thuộc tính {propertyKey}.");
+    }
+
+    private void DeleteBuiltInProperty(string propertyKey)
+    {
+        if (selectedRecord == null)
+        {
+            return;
+        }
+
+        var deleted = operationsDatabase != null &&
+                      operationsDatabase.DeleteElementProperty(
+                          selectedRecord.SourceFile,
+                          GetElementKey(selectedRecord.Metadata),
+                          propertyKey);
+        if (!deleted)
+        {
+            SetImportStatus($"Không thể xóa thuộc tính {propertyKey} khỏi SQLite.");
+            return;
+        }
+
+        selectedRecord.PropertyOverrides.Remove(propertyKey);
+        selectedRecord.DeletedProperties.Add(propertyKey);
+        ShowDetails(selectedRecord);
+        SetImportStatus($"Đã xóa thuộc tính {propertyKey} khỏi cấu kiện.");
     }
 
     private void SaveOperations()
@@ -1747,7 +1859,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
-            EnsureCustomPropertiesLoaded(record);
+            EnsureElementPropertiesLoaded(record);
             builder.AppendLine("    {");
             builder.AppendLine(
                 $"      \"globalId\": \"{Json(record.State.OperationsGlobalId)}\",");
@@ -1775,7 +1887,33 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                     propertyIndex + 1 < customProperties.Length ? "," : string.Empty);
             }
 
-            builder.AppendLine("      }");
+            builder.AppendLine("      },");
+            builder.AppendLine("      \"propertyOverrides\": {");
+            var propertyOverrides = record.PropertyOverrides
+                .OrderBy(pair => pair.Key, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+            for (var propertyIndex = 0; propertyIndex < propertyOverrides.Length; propertyIndex++)
+            {
+                var property = propertyOverrides[propertyIndex];
+                builder.Append(
+                    $"        \"{Json(property.Key)}\": \"{Json(property.Value)}\"");
+                builder.AppendLine(
+                    propertyIndex + 1 < propertyOverrides.Length ? "," : string.Empty);
+            }
+
+            builder.AppendLine("      },");
+            builder.AppendLine("      \"deletedProperties\": [");
+            var deletedProperties = record.DeletedProperties
+                .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+            for (var propertyIndex = 0; propertyIndex < deletedProperties.Length; propertyIndex++)
+            {
+                builder.Append($"        \"{Json(deletedProperties[propertyIndex])}\"");
+                builder.AppendLine(
+                    propertyIndex + 1 < deletedProperties.Length ? "," : string.Empty);
+            }
+
+            builder.AppendLine("      ]");
             builder.Append("    }");
             builder.AppendLine(index + 1 < records.Count ? "," : string.Empty);
         }
@@ -2297,6 +2435,11 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         public readonly Dictionary<string, string> CustomProperties =
             new(StringComparer.CurrentCultureIgnoreCase);
         public bool CustomPropertiesLoaded;
+        public readonly Dictionary<string, string> PropertyOverrides =
+            new(StringComparer.CurrentCultureIgnoreCase);
+        public readonly HashSet<string> DeletedProperties =
+            new(StringComparer.CurrentCultureIgnoreCase);
+        public bool PropertyOverridesLoaded;
     }
 
     private struct ModelContext

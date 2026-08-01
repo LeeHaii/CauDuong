@@ -13,9 +13,12 @@ public static class IfcUiHitTest
         var root = document != null ? document.rootVisualElement : null;
         if (root?.panel != null)
         {
+            var topLeftScreenPosition = new Vector2(
+                screenPosition.x,
+                Screen.height - screenPosition.y);
             var panelPosition = RuntimePanelUtils.ScreenToPanel(
                 root.panel,
-                screenPosition);
+                topLeftScreenPosition);
             var picked = root.panel.Pick(panelPosition);
             for (var current = picked; current != null; current = current.parent)
             {
