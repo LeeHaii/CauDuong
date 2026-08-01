@@ -64,8 +64,8 @@
                 <ui:Button name="save-operations-button" text="Lưu Thay Đổi &amp; Cập Nhật Mô Hình 3D" class="save-button" />
 
                 <ui:VisualElement class="property-heading-row">
-                    <ui:Label text="PropertySets (1)" class="property-heading" />
-                    <ui:Label text="Pset_VD3InfraOps" class="pset-badge" />
+                    <ui:Label name="property-set-count" text="PropertySets (1)" class="property-heading" />
+                    <ui:Button name="add-custom-property-button" text="+ Thêm Thuộc Tính" class="add-property-button" />
                 </ui:VisualElement>
                 <ui:VisualElement name="property-list" class="property-list" />
             </ui:ScrollView>
@@ -91,7 +91,86 @@
         <ui:VisualElement name="export-popup" class="toolbar-popup export-popup hud-interactive">
             <ui:Button name="export-csv-button" text="Export File Excel (.CSV)" class="popup-command" />
             <ui:Button name="export-json-button" text="Export Dữ Liệu BIM (.JSON)" class="popup-command" />
-            <ui:Button name="export-pdf-button" text="In Báo Cáo Vận Hành (PDF)" class="popup-command" />
+            <ui:Button name="export-pdf-button" text="Dashboard Báo Cáo Vận Hành" class="popup-command" />
+        </ui:VisualElement>
+
+        <ui:VisualElement name="custom-property-overlay" class="modal-overlay hud-interactive">
+            <ui:VisualElement class="custom-property-dialog modal-surface">
+                <ui:Label name="custom-property-title" text="+ Thêm Thuộc Tính IFC" class="modal-title" />
+                <ui:Label text="Tên Thuộc Tính (Key)" class="modal-field-label" />
+                <ui:TextField name="custom-property-key" class="modal-input" />
+                <ui:Label text="Giá Trị Thuộc Tính (Value)" class="modal-field-label" />
+                <ui:TextField name="custom-property-value" class="modal-input" multiline="true" />
+                <ui:Label name="custom-property-error" text="" class="modal-error" />
+                <ui:VisualElement class="modal-actions">
+                    <ui:Button name="cancel-custom-property-button" text="Hủy" class="modal-button modal-button-secondary" />
+                    <ui:Button name="save-custom-property-button" text="Thêm" class="modal-button modal-button-primary" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:VisualElement name="analytics-overlay" class="analytics-overlay hud-interactive">
+            <ui:VisualElement class="analytics-shell">
+                <ui:VisualElement class="analytics-header">
+                    <ui:VisualElement>
+                        <ui:Label text="Báo Cáo Vận Hành &amp; Bảo Trì" class="analytics-title" />
+                        <ui:Label name="analytics-generated-at" text="Dữ liệu tổng hợp hiện tại" class="analytics-subtitle" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="analytics-header-actions">
+                        <ui:Button name="analytics-export-pdf-button" text="Xuất Báo Cáo PDF" class="analytics-export-button" />
+                        <ui:Button name="close-analytics-button" text="×" class="analytics-close-button" tooltip="Đóng dashboard báo cáo" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <ui:ScrollView class="analytics-scroll" mode="Vertical">
+                    <ui:VisualElement class="analytics-kpi-row">
+                        <ui:VisualElement class="analytics-kpi analytics-kpi-total">
+                            <ui:Label text="TỔNG CẤU KIỆN" class="analytics-kpi-label" />
+                            <ui:Label name="analytics-total-count" text="0" class="analytics-kpi-value" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="analytics-kpi analytics-kpi-operational">
+                            <ui:Label text="HOẠT ĐỘNG TỐT" class="analytics-kpi-label" />
+                            <ui:Label name="analytics-operational-count" text="0" class="analytics-kpi-value" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="analytics-kpi analytics-kpi-warning">
+                            <ui:Label text="CẦN BẢO TRÌ" class="analytics-kpi-label" />
+                            <ui:Label name="analytics-warning-count" text="0" class="analytics-kpi-value" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="analytics-kpi analytics-kpi-critical">
+                            <ui:Label text="HỎNG HÓC" class="analytics-kpi-label" />
+                            <ui:Label name="analytics-critical-count" text="0" class="analytics-kpi-value" />
+                        </ui:VisualElement>
+                        <ui:VisualElement class="analytics-kpi analytics-kpi-repairing">
+                            <ui:Label text="ĐANG SỬA CHỮA" class="analytics-kpi-label" />
+                            <ui:Label name="analytics-repairing-count" text="0" class="analytics-kpi-value" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+
+                    <ui:VisualElement class="analytics-main-row">
+                        <ui:VisualElement class="analytics-panel analytics-status-panel">
+                            <ui:Label text="Phân Bố Trạng Thái Vận Hành" class="analytics-panel-title" />
+                            <ui:VisualElement class="analytics-donut-layout">
+                                <ui:VisualElement name="analytics-status-chart" class="analytics-donut-chart" />
+                                <ui:VisualElement name="analytics-status-legend" class="analytics-legend" />
+                            </ui:VisualElement>
+                        </ui:VisualElement>
+
+                        <ui:VisualElement class="analytics-panel analytics-category-panel">
+                            <ui:Label text="Trạng Thái Theo Nhóm Hạ Tầng" class="analytics-panel-title" />
+                            <ui:VisualElement name="analytics-category-chart" class="analytics-column-chart" />
+                            <ui:VisualElement name="analytics-category-legend" class="analytics-inline-legend" />
+                        </ui:VisualElement>
+                    </ui:VisualElement>
+
+                    <ui:VisualElement class="analytics-panel analytics-source-panel">
+                        <ui:VisualElement class="analytics-panel-heading-row">
+                            <ui:Label text="Phân Bố Cấu Kiện Theo File IFC" class="analytics-panel-title" />
+                            <ui:Label name="analytics-model-count" text="0 mô hình" class="analytics-model-count" />
+                        </ui:VisualElement>
+                        <ui:VisualElement name="analytics-source-chart" class="analytics-source-chart" />
+                    </ui:VisualElement>
+                </ui:ScrollView>
+            </ui:VisualElement>
         </ui:VisualElement>
 
         <ui:VisualElement name="status-strip" class="status-strip hud-interactive">

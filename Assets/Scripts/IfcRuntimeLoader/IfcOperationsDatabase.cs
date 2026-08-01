@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using CauDuong.IfcOperations;
@@ -20,6 +21,11 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
     public string DatabasePath { get; private set; }
 
     private void Awake()
+    {
+        Open();
+    }
+
+    private void OnEnable()
     {
         Open();
     }
@@ -114,6 +120,97 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
         }
     }
 
+    public bool TryLoadCustomProperties(
+        string sourceFile,
+        string elementKey,
+        IDictionary<string, string> destination)
+    {
+        if (!IsAvailable || destination == null)
+        {
+            return false;
+        }
+
+        destination.Clear();
+        const string sql =
+            "SELECT property_key, property_value FROM ifc_custom_properties " +
+            "WHERE source_file = ?1 AND element_key = ?2 ORDER BY property_key COLLATE NOCASE;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            while (sqlite3_step(statement) == SqliteRow)
+            {
+                destination[ReadColumnText(statement, 0)] = ReadColumnText(statement, 1);
+            }
+
+            return true;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
+    public bool SaveCustomProperty(
+        string sourceFile,
+        string elementKey,
+        string propertyKey,
+        string propertyValue,
+        string previousKey = null)
+    {
+        if (!IsAvailable || string.IsNullOrWhiteSpace(propertyKey) ||
+            !Execute("BEGIN IMMEDIATE TRANSACTION;"))
+        {
+            return false;
+        }
+
+        var success = false;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(previousKey) &&
+                !string.Equals(previousKey, propertyKey, StringComparison.OrdinalIgnoreCase) &&
+                !DeleteCustomPropertyInternal(sourceFile, elementKey, previousKey))
+            {
+                return false;
+            }
+
+            if (!UpsertCustomPropertyInternal(
+                    sourceFile,
+                    elementKey,
+                    propertyKey.Trim(),
+                    propertyValue ?? string.Empty))
+            {
+                return false;
+            }
+
+            success = Execute("COMMIT;");
+            return success;
+        }
+        finally
+        {
+            if (!success)
+            {
+                Execute("ROLLBACK;");
+            }
+        }
+    }
+
+    public bool DeleteCustomProperty(
+        string sourceFile,
+        string elementKey,
+        string propertyKey)
+    {
+        return IsAvailable &&
+               !string.IsNullOrWhiteSpace(propertyKey) &&
+               DeleteCustomPropertyInternal(sourceFile, elementKey, propertyKey);
+    }
+
     private void Open()
     {
         if (database != IntPtr.Zero)
@@ -154,6 +251,12 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
                 "status INTEGER NOT NULL, operations_global_id TEXT NOT NULL, " +
                 "maintenance_note TEXT NOT NULL, updated_at TEXT NOT NULL, " +
                 "PRIMARY KEY (source_file, element_key));");
+            Execute(
+                "CREATE TABLE IF NOT EXISTS ifc_custom_properties (" +
+                "source_file TEXT NOT NULL, element_key TEXT NOT NULL, " +
+                "property_key TEXT NOT NULL COLLATE NOCASE, " +
+                "property_value TEXT NOT NULL, updated_at TEXT NOT NULL, " +
+                "PRIMARY KEY (source_file, element_key, property_key));");
         }
         catch (Exception exception)
         {
@@ -204,6 +307,64 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
         finally
         {
             Marshal.FreeHGlobal(sqlPointer);
+        }
+    }
+
+    private bool UpsertCustomPropertyInternal(
+        string sourceFile,
+        string elementKey,
+        string propertyKey,
+        string propertyValue)
+    {
+        const string sql =
+            "INSERT OR REPLACE INTO ifc_custom_properties " +
+            "(source_file, element_key, property_key, property_value, updated_at) " +
+            "VALUES (?1, ?2, ?3, ?4, ?5);";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            BindText(statement, 3, propertyKey);
+            BindText(statement, 4, propertyValue);
+            BindText(statement, 5, DateTime.Now.ToString("o"));
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
+    private bool DeleteCustomPropertyInternal(
+        string sourceFile,
+        string elementKey,
+        string propertyKey)
+    {
+        const string sql =
+            "DELETE FROM ifc_custom_properties " +
+            "WHERE source_file = ?1 AND element_key = ?2 AND property_key = ?3;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            BindText(statement, 3, propertyKey);
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
         }
     }
 

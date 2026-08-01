@@ -50,6 +50,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private VisualElement categoryList;
     private ScrollView categoryScroll;
     private VisualElement propertyList;
+    private Label propertySetCountLabel;
     private VisualElement modelManagerPopup;
     private VisualElement measurementPopup;
     private VisualElement exportPopup;
@@ -58,6 +59,13 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private VisualElement loadingOverlay;
     private VisualElement loadingSpinner;
     private VisualElement measurementHud;
+    private VisualElement customPropertyOverlay;
+    private VisualElement analyticsOverlay;
+    private VisualElement analyticsStatusChart;
+    private VisualElement analyticsStatusLegend;
+    private VisualElement analyticsCategoryChart;
+    private VisualElement analyticsCategoryLegend;
+    private VisualElement analyticsSourceChart;
     private Label totalCountLabel;
     private Button layerCountButton;
     private Button measureButton;
@@ -69,10 +77,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private Label detailNameLabel;
     private Label globalIdLabel;
     private Label expressIdLabel;
+    private Label customPropertyTitle;
+    private Label customPropertyError;
+    private Label analyticsGeneratedAt;
+    private Label analyticsTotalCount;
+    private Label analyticsOperationalCount;
+    private Label analyticsWarningCount;
+    private Label analyticsCriticalCount;
+    private Label analyticsRepairingCount;
+    private Label analyticsModelCount;
     private VisualElement colorSwatch;
     private TextField displayNameInput;
     private TextField maintenanceNoteInput;
     private DropdownField statusDropdown;
+    private TextField customPropertyKeyInput;
+    private TextField customPropertyValueInput;
+    private Button customPropertySaveButton;
     private IfcAssetRecord selectedRecord;
     private IfcOperationalStatus? activeStatusFilter;
     private IfcMeasurementController measurementController;
@@ -86,6 +106,16 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private bool pendingSceneClick;
     private bool startupLoading;
     private bool uiBound;
+    private string editingCustomPropertyKey;
+    private DonutChartElement statusDonutChart;
+
+    private static readonly Color[] StatusChartColors =
+    {
+        new Color32(24, 173, 115, 255),
+        new Color32(229, 161, 26, 255),
+        new Color32(213, 42, 67, 255),
+        new Color32(34, 110, 220, 255)
+    };
 
     private static readonly List<string> StatusChoices = new()
     {
@@ -263,6 +293,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         categoryList = root.Q<VisualElement>("category-list");
         categoryScroll = root.Q<ScrollView>("category-scroll");
         propertyList = root.Q<VisualElement>("property-list");
+        propertySetCountLabel = root.Q<Label>("property-set-count");
         modelManagerPopup = root.Q<VisualElement>("model-manager-popup");
         measurementPopup = root.Q<VisualElement>("measurement-popup");
         exportPopup = root.Q<VisualElement>("export-popup");
@@ -271,6 +302,13 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         loadingOverlay = root.Q<VisualElement>("loading-overlay");
         loadingSpinner = root.Q<VisualElement>("loading-spinner");
         measurementHud = root.Q<VisualElement>("measurement-hud");
+        customPropertyOverlay = root.Q<VisualElement>("custom-property-overlay");
+        analyticsOverlay = root.Q<VisualElement>("analytics-overlay");
+        analyticsStatusChart = root.Q<VisualElement>("analytics-status-chart");
+        analyticsStatusLegend = root.Q<VisualElement>("analytics-status-legend");
+        analyticsCategoryChart = root.Q<VisualElement>("analytics-category-chart");
+        analyticsCategoryLegend = root.Q<VisualElement>("analytics-category-legend");
+        analyticsSourceChart = root.Q<VisualElement>("analytics-source-chart");
         totalCountLabel = root.Q<Label>("total-count");
         layerCountButton = root.Q<Button>("layer-button");
         measureButton = root.Q<Button>("measure-button");
@@ -282,10 +320,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         detailNameLabel = root.Q<Label>("detail-name");
         globalIdLabel = root.Q<Label>("detail-global-id");
         expressIdLabel = root.Q<Label>("detail-express-id");
+        customPropertyTitle = root.Q<Label>("custom-property-title");
+        customPropertyError = root.Q<Label>("custom-property-error");
+        analyticsGeneratedAt = root.Q<Label>("analytics-generated-at");
+        analyticsTotalCount = root.Q<Label>("analytics-total-count");
+        analyticsOperationalCount = root.Q<Label>("analytics-operational-count");
+        analyticsWarningCount = root.Q<Label>("analytics-warning-count");
+        analyticsCriticalCount = root.Q<Label>("analytics-critical-count");
+        analyticsRepairingCount = root.Q<Label>("analytics-repairing-count");
+        analyticsModelCount = root.Q<Label>("analytics-model-count");
         colorSwatch = root.Q<VisualElement>("color-swatch");
         displayNameInput = root.Q<TextField>("display-name-input");
         maintenanceNoteInput = root.Q<TextField>("maintenance-note-input");
         statusDropdown = root.Q<DropdownField>("status-dropdown");
+        customPropertyKeyInput = root.Q<TextField>("custom-property-key");
+        customPropertyValueInput = root.Q<TextField>("custom-property-value");
+        customPropertySaveButton = root.Q<Button>("save-custom-property-button");
 
         root.Q<Button>("browse-ifc-button").clicked += BrowseIfc;
         root.Q<Button>("layer-button").clicked += ToggleModelManager;
@@ -302,9 +352,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         root.Q<Button>("clear-measurements-button").clicked += ClearMeasurements;
         root.Q<Button>("export-csv-button").clicked += ExportReport;
         root.Q<Button>("export-json-button").clicked += ExportJson;
-        root.Q<Button>("export-pdf-button").clicked += ExportPdfReport;
+        root.Q<Button>("export-pdf-button").clicked += OpenAnalyticsDashboard;
         root.Q<Button>("close-details-button").clicked += CloseDetails;
         root.Q<Button>("save-operations-button").clicked += SaveOperations;
+        root.Q<Button>("add-custom-property-button").clicked += OpenAddCustomProperty;
+        root.Q<Button>("cancel-custom-property-button").clicked += CloseCustomPropertyEditor;
+        customPropertySaveButton.clicked += SaveCustomProperty;
+        root.Q<Button>("close-analytics-button").clicked += CloseAnalyticsDashboard;
+        root.Q<Button>("analytics-export-pdf-button").clicked += ExportPdfReport;
 
         RegisterStatusButton("filter-all", null);
         RegisterStatusButton("filter-operational", IfcOperationalStatus.Operational);
@@ -324,6 +379,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         statusStrip.style.display = DisplayStyle.None;
         loadingOverlay.style.display = DisplayStyle.None;
         measurementHud.style.display = DisplayStyle.None;
+        customPropertyOverlay.style.display = DisplayStyle.None;
+        analyticsOverlay.style.display = DisplayStyle.None;
+        statusDonutChart = new DonutChartElement
+        {
+            pickingMode = PickingMode.Ignore
+        };
+        statusDonutChart.style.flexGrow = 1f;
+        analyticsStatusChart.Add(statusDonutChart);
         root.RegisterCallback<GeometryChangedEvent>(HandleGeometryChanged);
 
         uiBound = true;
@@ -337,7 +400,9 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                totalCountLabel != null &&
                layerCountButton != null &&
                categoryList != null &&
-               propertyList != null;
+               propertyList != null &&
+               customPropertyOverlay != null &&
+               analyticsOverlay != null;
     }
 
     private void RegisterStatusButton(string elementName, IfcOperationalStatus? status)
@@ -397,6 +462,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         recordsByMetadata.Clear();
         recordsByGeometry.Clear();
         selectedRecord = null;
+        CloseCustomPropertyEditor();
+        CloseAnalyticsDashboard();
 
         if (loader == null || loader.LoadedModels.Count == 0)
         {
@@ -861,6 +928,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void ShowDetails(IfcAssetRecord record)
     {
+        EnsureCustomPropertiesLoaded(record);
+
         detailsPanel.style.display = DisplayStyle.Flex;
         detailTypeLabel.text = record.IfcType;
         detailNameLabel.text = record.Name;
@@ -872,6 +941,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         colorSwatch.style.backgroundColor = new StyleColor(record.Color);
 
         propertyList.Clear();
+        propertySetCountLabel.text = $"PropertySets ({(record.CustomProperties.Count > 0 ? 2 : 1)})";
+        AddPropertySetHeading("Pset_VD3InfraOps");
         AddPropertyRow("Dự án", ProjectName);
         AddPropertyRow("Nguồn File", record.SourceFile);
         AddPropertyRow("Mã IFC", record.IfcType);
@@ -892,12 +963,54 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         AddPropertyRow(
             "Thời gian cập nhật",
             EmptyFallback(record.State.UpdatedAt, "Chưa cập nhật"));
+
+        if (record.CustomProperties.Count > 0)
+        {
+            AddPropertySetHeading("ThuộcTínhTùyChỉnh");
+            foreach (var property in record.CustomProperties.OrderBy(
+                         pair => pair.Key,
+                         StringComparer.CurrentCultureIgnoreCase))
+            {
+                AddPropertyRow(
+                    property.Key,
+                    property.Value,
+                    () => OpenEditCustomProperty(property.Key),
+                    () => DeleteCustomProperty(property.Key));
+            }
+        }
     }
 
-    private void AddPropertyRow(string key, string value)
+    private void EnsureCustomPropertiesLoaded(IfcAssetRecord record)
+    {
+        if (record == null || record.CustomPropertiesLoaded || operationsDatabase == null)
+        {
+            return;
+        }
+
+        record.CustomPropertiesLoaded = operationsDatabase.TryLoadCustomProperties(
+            record.SourceFile,
+            GetElementKey(record.Metadata),
+            record.CustomProperties);
+    }
+
+    private void AddPropertySetHeading(string text)
+    {
+        var heading = new Label(text);
+        heading.AddToClassList("property-set-heading");
+        propertyList.Add(heading);
+    }
+
+    private void AddPropertyRow(
+        string key,
+        string value,
+        Action edit = null,
+        Action delete = null)
     {
         var row = new VisualElement();
         row.AddToClassList("property-row");
+
+        var copy = new VisualElement();
+        copy.AddToClassList("property-copy");
 
         var keyLabel = new Label(key);
         keyLabel.AddToClassList("property-key");
@@ -905,9 +1018,158 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         var valueLabel = new Label(value);
         valueLabel.AddToClassList("property-value");
 
-        row.Add(keyLabel);
-        row.Add(valueLabel);
+        copy.Add(keyLabel);
+        copy.Add(valueLabel);
+        row.Add(copy);
+
+        if (edit != null || delete != null)
+        {
+            var actions = new VisualElement();
+            actions.AddToClassList("property-actions");
+            if (edit != null)
+            {
+                var editButton = new Button(edit)
+                {
+                    text = "✎",
+                    tooltip = $"Sửa thuộc tính {key}"
+                };
+                editButton.AddToClassList("property-action-button");
+                actions.Add(editButton);
+            }
+
+            if (delete != null)
+            {
+                var deleteButton = new Button(delete)
+                {
+                    text = "×",
+                    tooltip = $"Xóa thuộc tính {key}"
+                };
+                deleteButton.AddToClassList("property-action-button");
+                deleteButton.AddToClassList("property-action-delete");
+                actions.Add(deleteButton);
+            }
+
+            row.Add(actions);
+        }
+
         propertyList.Add(row);
+    }
+
+    private void OpenAddCustomProperty()
+    {
+        if (selectedRecord == null)
+        {
+            SetImportStatus("Hãy chọn một cấu kiện IFC trước khi thêm thuộc tính.");
+            return;
+        }
+
+        editingCustomPropertyKey = null;
+        customPropertyTitle.text = "+ Thêm Thuộc Tính IFC";
+        customPropertySaveButton.text = "Thêm";
+        customPropertyKeyInput.SetValueWithoutNotify(string.Empty);
+        customPropertyValueInput.SetValueWithoutNotify(string.Empty);
+        customPropertyError.text = string.Empty;
+        customPropertyOverlay.style.display = DisplayStyle.Flex;
+        customPropertyKeyInput.schedule.Execute(customPropertyKeyInput.Focus);
+    }
+
+    private void OpenEditCustomProperty(string propertyKey)
+    {
+        if (selectedRecord == null ||
+            !selectedRecord.CustomProperties.TryGetValue(propertyKey, out var value))
+        {
+            return;
+        }
+
+        editingCustomPropertyKey = propertyKey;
+        customPropertyTitle.text = "Sửa Thuộc Tính IFC";
+        customPropertySaveButton.text = "Lưu";
+        customPropertyKeyInput.SetValueWithoutNotify(propertyKey);
+        customPropertyValueInput.SetValueWithoutNotify(value);
+        customPropertyError.text = string.Empty;
+        customPropertyOverlay.style.display = DisplayStyle.Flex;
+        customPropertyValueInput.schedule.Execute(customPropertyValueInput.Focus);
+    }
+
+    private void CloseCustomPropertyEditor()
+    {
+        editingCustomPropertyKey = null;
+        if (customPropertyOverlay != null)
+        {
+            customPropertyOverlay.style.display = DisplayStyle.None;
+        }
+    }
+
+    private void SaveCustomProperty()
+    {
+        if (selectedRecord == null)
+        {
+            CloseCustomPropertyEditor();
+            return;
+        }
+
+        var propertyKey = customPropertyKeyInput.value?.Trim();
+        if (string.IsNullOrWhiteSpace(propertyKey))
+        {
+            customPropertyError.text = "Tên thuộc tính không được để trống.";
+            return;
+        }
+
+        if (selectedRecord.CustomProperties.ContainsKey(propertyKey) &&
+            !string.Equals(propertyKey, editingCustomPropertyKey, StringComparison.OrdinalIgnoreCase))
+        {
+            customPropertyError.text = "Tên thuộc tính này đã tồn tại.";
+            return;
+        }
+
+        var propertyValue = customPropertyValueInput.value ?? string.Empty;
+        var persisted = operationsDatabase != null &&
+                        operationsDatabase.SaveCustomProperty(
+                            selectedRecord.SourceFile,
+                            GetElementKey(selectedRecord.Metadata),
+                            propertyKey,
+                            propertyValue,
+                            editingCustomPropertyKey);
+        if (!persisted)
+        {
+            customPropertyError.text = "Không thể lưu thuộc tính vào SQLite.";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(editingCustomPropertyKey) &&
+            !string.Equals(propertyKey, editingCustomPropertyKey, StringComparison.OrdinalIgnoreCase))
+        {
+            selectedRecord.CustomProperties.Remove(editingCustomPropertyKey);
+        }
+
+        selectedRecord.CustomProperties[propertyKey] = propertyValue;
+        CloseCustomPropertyEditor();
+        ShowDetails(selectedRecord);
+        SetImportStatus($"Đã lưu thuộc tính {propertyKey} vào SQLite.");
+    }
+
+    private void DeleteCustomProperty(string propertyKey)
+    {
+        if (selectedRecord == null ||
+            !selectedRecord.CustomProperties.ContainsKey(propertyKey))
+        {
+            return;
+        }
+
+        var deleted = operationsDatabase != null &&
+                      operationsDatabase.DeleteCustomProperty(
+                          selectedRecord.SourceFile,
+                          GetElementKey(selectedRecord.Metadata),
+                          propertyKey);
+        if (!deleted)
+        {
+            SetImportStatus($"Không thể xóa thuộc tính {propertyKey} khỏi SQLite.");
+            return;
+        }
+
+        selectedRecord.CustomProperties.Remove(propertyKey);
+        ShowDetails(selectedRecord);
+        SetImportStatus($"Đã xóa thuộc tính {propertyKey}.");
     }
 
     private void SaveOperations()
@@ -964,6 +1226,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
     private void CloseDetails()
     {
+        CloseCustomPropertyEditor();
         SetSelectionHighlight(selectedRecord, false);
         selectedRecord = null;
         detailsPanel.style.display = DisplayStyle.None;
@@ -1164,6 +1427,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
 
         loader.ClearModels();
+        CloseCustomPropertyEditor();
+        CloseAnalyticsDashboard();
         HidePopups();
         SetImportStatus("Đã xóa tất cả mô hình IFC khỏi cảnh.");
     }
@@ -1238,6 +1503,192 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             orbitCamera.maxDistance);
     }
 
+    private void OpenAnalyticsDashboard()
+    {
+        if (records.Count == 0)
+        {
+            SetImportStatus("Chưa có dữ liệu IFC để mở dashboard báo cáo.");
+            return;
+        }
+
+        HidePopups();
+        PopulateAnalyticsDashboard();
+        analyticsOverlay.style.display = DisplayStyle.Flex;
+    }
+
+    private void CloseAnalyticsDashboard()
+    {
+        if (analyticsOverlay != null)
+        {
+            analyticsOverlay.style.display = DisplayStyle.None;
+        }
+    }
+
+    private void PopulateAnalyticsDashboard()
+    {
+        var generatedAt = DateTime.Now;
+        analyticsGeneratedAt.text =
+            $"Cập nhật {generatedAt:dd/MM/yyyy HH:mm:ss} | {(loader?.LoadedModels.Count ?? 0):N0} mô hình IFC";
+        analyticsTotalCount.text = records.Count.ToString("N0");
+
+        var statusCounts = Enum
+            .GetValues(typeof(IfcOperationalStatus))
+            .Cast<IfcOperationalStatus>()
+            .Select(status => records.Count(record => record.State.Status == status))
+            .ToArray();
+        analyticsOperationalCount.text = statusCounts[(int)IfcOperationalStatus.Operational].ToString("N0");
+        analyticsWarningCount.text = statusCounts[(int)IfcOperationalStatus.Warning].ToString("N0");
+        analyticsCriticalCount.text = statusCounts[(int)IfcOperationalStatus.Critical].ToString("N0");
+        analyticsRepairingCount.text = statusCounts[(int)IfcOperationalStatus.Repairing].ToString("N0");
+        analyticsModelCount.text = $"{(loader?.LoadedModels.Count ?? 0):N0} mô hình";
+
+        statusDonutChart.SetData(statusCounts, StatusChartColors);
+        BuildStatusLegend(statusCounts);
+        BuildCategoryStatusChart();
+        BuildSourceDistributionChart();
+    }
+
+    private void BuildStatusLegend(IReadOnlyList<int> statusCounts)
+    {
+        analyticsStatusLegend.Clear();
+        foreach (IfcOperationalStatus status in Enum.GetValues(typeof(IfcOperationalStatus)))
+        {
+            var row = new VisualElement();
+            row.AddToClassList("analytics-legend-row");
+
+            var swatch = new VisualElement();
+            swatch.AddToClassList("analytics-legend-swatch");
+            swatch.style.backgroundColor = StatusChartColors[(int)status];
+
+            var label = new Label(GetStatusLongLabel(status));
+            label.AddToClassList("analytics-legend-label");
+            var value = new Label(statusCounts[(int)status].ToString("N0"));
+            value.AddToClassList("analytics-legend-value");
+
+            row.Add(swatch);
+            row.Add(label);
+            row.Add(value);
+            analyticsStatusLegend.Add(row);
+        }
+    }
+
+    private void BuildCategoryStatusChart()
+    {
+        analyticsCategoryChart.Clear();
+        analyticsCategoryLegend.Clear();
+        var counts = new Dictionary<IfcInfrastructureCategory, int[]>();
+        var maximum = 1;
+        foreach (var definition in IfcInfrastructureClassifier.Definitions)
+        {
+            var values = new int[StatusChartColors.Length];
+            foreach (IfcOperationalStatus status in Enum.GetValues(typeof(IfcOperationalStatus)))
+            {
+                values[(int)status] = records.Count(record =>
+                    record.State.Category == definition.Category &&
+                    record.State.Status == status);
+                maximum = Math.Max(maximum, values[(int)status]);
+            }
+
+            counts[definition.Category] = values;
+        }
+
+        foreach (var definition in IfcInfrastructureClassifier.Definitions)
+        {
+            var group = new VisualElement();
+            group.AddToClassList("analytics-column-group");
+            var bars = new VisualElement();
+            bars.AddToClassList("analytics-column-bars");
+            var values = counts[definition.Category];
+            foreach (IfcOperationalStatus status in Enum.GetValues(typeof(IfcOperationalStatus)))
+            {
+                var count = values[(int)status];
+                var bar = new VisualElement
+                {
+                    tooltip = $"{definition.DisplayName} | {GetStatusLongLabel(status)}: {count:N0}"
+                };
+                bar.AddToClassList("analytics-column-bar");
+                bar.style.height = Mathf.Max(3f, count / (float)maximum * 145f);
+                bar.style.backgroundColor = StatusChartColors[(int)status];
+                bars.Add(bar);
+            }
+
+            var total = values.Sum();
+            var label = new Label($"{definition.Symbol}\n{total:N0}")
+            {
+                tooltip = definition.DisplayName
+            };
+            label.AddToClassList("analytics-column-label");
+            group.Add(bars);
+            group.Add(label);
+            analyticsCategoryChart.Add(group);
+        }
+
+        foreach (IfcOperationalStatus status in Enum.GetValues(typeof(IfcOperationalStatus)))
+        {
+            var item = new VisualElement();
+            item.AddToClassList("analytics-inline-legend-item");
+            var swatch = new VisualElement();
+            swatch.AddToClassList("analytics-legend-swatch");
+            swatch.style.backgroundColor = StatusChartColors[(int)status];
+            var label = new Label(GetStatusShortLabel(status));
+            label.AddToClassList("analytics-legend-label");
+            item.Add(swatch);
+            item.Add(label);
+            analyticsCategoryLegend.Add(item);
+        }
+    }
+
+    private void BuildSourceDistributionChart()
+    {
+        analyticsSourceChart.Clear();
+        var sources = records
+            .GroupBy(record => record.SourceFile, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Name = Path.GetFileNameWithoutExtension(group.Key),
+                Count = group.Count()
+            })
+            .OrderByDescending(source => source.Count)
+            .ToArray();
+        var maximum = Math.Max(1, sources.Select(source => source.Count).DefaultIfEmpty(1).Max());
+
+        foreach (var source in sources)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("analytics-source-row");
+            var name = new Label(source.Name)
+            {
+                tooltip = source.Name
+            };
+            name.AddToClassList("analytics-source-name");
+            var track = new VisualElement();
+            track.AddToClassList("analytics-source-track");
+            var fill = new VisualElement();
+            fill.AddToClassList("analytics-source-fill");
+            fill.style.width = new Length(source.Count / (float)maximum * 100f, LengthUnit.Percent);
+            track.Add(fill);
+            var value = new Label($"{source.Count:N0}");
+            value.AddToClassList("analytics-source-value");
+            row.Add(name);
+            row.Add(track);
+            row.Add(value);
+            analyticsSourceChart.Add(row);
+        }
+    }
+
+    private List<IfcOperationsReportRow> BuildReportRows()
+    {
+        return records
+            .OrderBy(record => record.Metadata.EntityLabel)
+            .Select(record => new IfcOperationsReportRow(
+                record.Metadata.EntityLabel,
+                record.Name,
+                IfcInfrastructureClassifier.GetDefinition(record.State.Category).DisplayName,
+                record.State.Status,
+                record.SourceFile))
+            .ToList();
+    }
+
     private void ExportReport()
     {
         if (records.Count == 0)
@@ -1296,6 +1747,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
+            EnsureCustomPropertiesLoaded(record);
             builder.AppendLine("    {");
             builder.AppendLine(
                 $"      \"globalId\": \"{Json(record.State.OperationsGlobalId)}\",");
@@ -1309,7 +1761,21 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             builder.AppendLine($"      \"triangles\": {record.TriangleCount},");
             builder.AppendLine(
                 $"      \"vn2000\": {{ \"x\": {record.Vn2000X.ToString("R", CultureInfo.InvariantCulture)}, " +
-                $"\"y\": {record.Vn2000Y.ToString("R", CultureInfo.InvariantCulture)} }}");
+                $"\"y\": {record.Vn2000Y.ToString("R", CultureInfo.InvariantCulture)} }},");
+            builder.AppendLine("      \"customProperties\": {");
+            var customProperties = record.CustomProperties
+                .OrderBy(pair => pair.Key, StringComparer.CurrentCultureIgnoreCase)
+                .ToArray();
+            for (var propertyIndex = 0; propertyIndex < customProperties.Length; propertyIndex++)
+            {
+                var property = customProperties[propertyIndex];
+                builder.Append(
+                    $"        \"{Json(property.Key)}\": \"{Json(property.Value)}\"");
+                builder.AppendLine(
+                    propertyIndex + 1 < customProperties.Length ? "," : string.Empty);
+            }
+
+            builder.AppendLine("      }");
             builder.Append("    }");
             builder.AppendLine(index + 1 < records.Count ? "," : string.Empty);
         }
@@ -1333,37 +1799,22 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
-        var lines = new List<string>
-        {
-            "BIM-GIS INFRAOPS - BAO CAO VAN HANH",
-            ProjectName,
-            $"Thoi gian: {DateTime.Now:dd/MM/yyyy HH:mm:ss}",
-            $"Mo hinh IFC: {loader.LoadedModels.Count:N0}",
-            $"Tong cau kien: {records.Count:N0}",
-            string.Empty
-        };
-
-        foreach (var definition in IfcInfrastructureClassifier.Definitions)
-        {
-            var count = records.Count(
-                record => record.State.Category == definition.Category);
-            lines.Add($"{definition.DisplayName}: {count:N0}");
-        }
-
-        lines.Add(string.Empty);
-        foreach (IfcOperationalStatus status in Enum.GetValues(typeof(IfcOperationalStatus)))
-        {
-            lines.Add(
-                $"{GetStatusShortLabel(status)}: " +
-                $"{records.Count(record => record.State.Status == status):N0}");
-        }
-
-        var fileName = $"IFC-Operations-{DateTime.Now:yyyyMMdd-HHmmss}.pdf";
+        var generatedAt = DateTime.Now;
+        var fileName = $"IFC-Operations-{generatedAt:yyyyMMdd-HHmmss}.pdf";
         var path = Path.Combine(Application.persistentDataPath, fileName);
-        File.WriteAllBytes(path, BuildSimplePdf(lines));
+        File.WriteAllBytes(
+            path,
+            IfcOperationsReport.BuildPdf(
+                ProjectName,
+                generatedAt,
+                loader?.LoadedModels.Count ?? 0,
+                BuildReportRows()));
         SetImportStatus($"Đã tạo báo cáo PDF: {fileName}");
+        if (analyticsGeneratedAt != null)
+        {
+            analyticsGeneratedAt.text = $"Đã xuất {fileName}";
+        }
         Debug.Log($"IFC operations PDF exported to {path}");
-        HidePopups();
     }
 
     private void HandleSceneSelection()
@@ -1591,6 +2042,18 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         };
     }
 
+    private static string GetStatusLongLabel(IfcOperationalStatus status)
+    {
+        return status switch
+        {
+            IfcOperationalStatus.Operational => "Tốt / Hoạt động bình thường",
+            IfcOperationalStatus.Warning => "Cần bảo trì định kỳ",
+            IfcOperationalStatus.Critical => "Sự cố / Hỏng hóc",
+            IfcOperationalStatus.Repairing => "Đang sửa chữa",
+            _ => status.ToString()
+        };
+    }
+
     private static int StatusFilterKey(IfcOperationalStatus? status)
     {
         return status.HasValue ? (int)status.Value : -1;
@@ -1706,6 +2169,114 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         return result.ToString().Normalize(NormalizationForm.FormC);
     }
 
+    private sealed class DonutChartElement : VisualElement
+    {
+        private int[] values = Array.Empty<int>();
+        private Color[] colors = Array.Empty<Color>();
+
+        public DonutChartElement()
+        {
+            generateVisualContent += DrawChart;
+            RegisterCallback<GeometryChangedEvent>(_ => MarkDirtyRepaint());
+        }
+
+        public void SetData(IReadOnlyList<int> chartValues, IReadOnlyList<Color> chartColors)
+        {
+            values = chartValues?.ToArray() ?? Array.Empty<int>();
+            colors = chartColors?.ToArray() ?? Array.Empty<Color>();
+            MarkDirtyRepaint();
+        }
+
+        private void DrawChart(MeshGenerationContext context)
+        {
+            var total = values.Sum();
+            if (total <= 0 || contentRect.width <= 1f || contentRect.height <= 1f)
+            {
+                return;
+            }
+
+            var segmentCounts = new int[values.Length];
+            var totalSegments = 0;
+            for (var index = 0; index < values.Length; index++)
+            {
+                if (values[index] <= 0)
+                {
+                    continue;
+                }
+
+                var span = 360f * values[index] / total;
+                segmentCounts[index] = Mathf.Max(2, Mathf.CeilToInt(span / 5f));
+                totalSegments += segmentCounts[index];
+            }
+
+            if (totalSegments == 0)
+            {
+                return;
+            }
+
+            var vertices = new Vertex[totalSegments * 4];
+            var indices = new ushort[totalSegments * 6];
+            var center = contentRect.center;
+            var outerRadius = Mathf.Min(contentRect.width, contentRect.height) * 0.46f;
+            var innerRadius = outerRadius * 0.58f;
+            var angle = -90f;
+            var vertexCursor = 0;
+            var indexCursor = 0;
+
+            for (var valueIndex = 0; valueIndex < values.Length; valueIndex++)
+            {
+                if (values[valueIndex] <= 0)
+                {
+                    continue;
+                }
+
+                var span = 360f * values[valueIndex] / total;
+                var segmentAngle = span / segmentCounts[valueIndex];
+                var color = valueIndex < colors.Length ? colors[valueIndex] : Color.gray;
+                for (var segment = 0; segment < segmentCounts[valueIndex]; segment++)
+                {
+                    var start = angle + segment * segmentAngle;
+                    var end = start + segmentAngle + 0.12f;
+                    vertices[vertexCursor] = ChartVertex(PointOnCircle(center, outerRadius, start), color);
+                    vertices[vertexCursor + 1] = ChartVertex(PointOnCircle(center, outerRadius, end), color);
+                    vertices[vertexCursor + 2] = ChartVertex(PointOnCircle(center, innerRadius, end), color);
+                    vertices[vertexCursor + 3] = ChartVertex(PointOnCircle(center, innerRadius, start), color);
+
+                    indices[indexCursor] = (ushort)vertexCursor;
+                    indices[indexCursor + 1] = (ushort)(vertexCursor + 1);
+                    indices[indexCursor + 2] = (ushort)(vertexCursor + 2);
+                    indices[indexCursor + 3] = (ushort)vertexCursor;
+                    indices[indexCursor + 4] = (ushort)(vertexCursor + 2);
+                    indices[indexCursor + 5] = (ushort)(vertexCursor + 3);
+                    vertexCursor += 4;
+                    indexCursor += 6;
+                }
+
+                angle += span;
+            }
+
+            var mesh = context.Allocate(vertices.Length, indices.Length);
+            mesh.SetAllVertices(vertices);
+            mesh.SetAllIndices(indices);
+        }
+
+        private static Vector2 PointOnCircle(Vector2 center, float radius, float angleDegrees)
+        {
+            var radians = angleDegrees * Mathf.Deg2Rad;
+            return center + new Vector2(Mathf.Cos(radians), Mathf.Sin(radians)) * radius;
+        }
+
+        private static Vertex ChartVertex(Vector2 position, Color color)
+        {
+            return new Vertex
+            {
+                position = new Vector3(position.x, position.y, Vertex.nearZ),
+                tint = color,
+                uv = Vector2.zero
+            };
+        }
+    }
+
     private sealed class IfcAssetRecord
     {
         public IfcElementMetadata Metadata;
@@ -1723,6 +2294,9 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         public long IndexCount;
         public double Vn2000X;
         public double Vn2000Y;
+        public readonly Dictionary<string, string> CustomProperties =
+            new(StringComparer.CurrentCultureIgnoreCase);
+        public bool CustomPropertiesLoaded;
     }
 
     private struct ModelContext
