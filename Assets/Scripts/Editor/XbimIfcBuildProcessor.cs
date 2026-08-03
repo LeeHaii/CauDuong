@@ -15,6 +15,7 @@ public sealed class XbimIfcBuildProcessor :
     private const string ConverterProject = "Tools/XbimIfcConverter/XbimIfcConverter.csproj";
     private const string PublishDirectory =
         "Tools/XbimIfcConverter/bin/Release/net8.0/win-x64/publish";
+    private const string DefaultIfcDirectory = "Assets/IFC/Default";
 
     public int callbackOrder => 0;
 
@@ -27,6 +28,7 @@ public sealed class XbimIfcBuildProcessor :
         }
 
         var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        ValidateDefaultIfcModels(projectRoot);
         var projectPath = Path.Combine(projectRoot, ConverterProject);
         var startInfo = new ProcessStartInfo
         {
@@ -77,6 +79,39 @@ public sealed class XbimIfcBuildProcessor :
             "XbimIfcConverter");
 
         CopyDirectory(source, destination);
+        CopyDefaultIfcModels(
+            projectRoot,
+            Path.Combine(playerDirectory!, playerName + "_Data"));
+    }
+
+    private static void ValidateDefaultIfcModels(string projectRoot)
+    {
+        var source = Path.Combine(projectRoot, DefaultIfcDirectory);
+        if (!Directory.Exists(source) ||
+            Directory.GetFiles(source, "*.ifc", SearchOption.TopDirectoryOnly).Length == 0)
+        {
+            throw new BuildFailedException(
+                $"Default IFC models are missing from: {source}");
+        }
+    }
+
+    private static void CopyDefaultIfcModels(string projectRoot, string playerDataDirectory)
+    {
+        var source = Path.Combine(projectRoot, DefaultIfcDirectory);
+        var destination = Path.Combine(
+            playerDataDirectory,
+            "StreamingAssets",
+            "IFC",
+            "Default");
+        Directory.CreateDirectory(destination);
+
+        var files = Directory.GetFiles(source, "*.ifc", SearchOption.TopDirectoryOnly);
+        foreach (var file in files)
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+        }
+
+        Debug.Log($"Packaged {files.Length} default IFC model(s) in {destination}");
     }
 
     private static void CopyDirectory(string source, string destination)

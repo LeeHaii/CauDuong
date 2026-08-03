@@ -430,7 +430,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         RebuildModelIndex();
         if (!startupLoading)
         {
-            FrameModel();
+            FrameModel(modelRoot);
         }
     }
 
@@ -1353,7 +1353,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             yield break;
         }
 
-        var defaultDirectory = Path.Combine(Application.dataPath, "IFC", "Default");
+        var defaultDirectory = GetDefaultIfcDirectory();
         if (!Directory.Exists(defaultDirectory))
         {
             SetImportStatus($"Không tìm thấy thư mục IFC mặc định: {defaultDirectory}");
@@ -1417,6 +1417,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         FrameModel();
         SetImportStatus(
             $"Đã tải {loader.LoadedModels.Count:N0} mô hình IFC mặc định.");
+    }
+
+    private static string GetDefaultIfcDirectory()
+    {
+#if UNITY_EDITOR
+        return Path.Combine(Application.dataPath, "IFC", "Default");
+#else
+        return Path.Combine(Application.streamingAssetsPath, "IFC", "Default");
+#endif
     }
 
     private void BuildModelList()
@@ -1597,6 +1606,35 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             bounds.Encapsulate(records[index].Bounds);
         }
 
+        FrameBounds(bounds);
+    }
+
+    private void FrameModel(GameObject modelRoot)
+    {
+        if (modelRoot == null)
+        {
+            FrameModel();
+            return;
+        }
+
+        var modelRecords = records
+            .Where(record => record.Metadata != null &&
+                             record.Metadata.transform.IsChildOf(modelRoot.transform))
+            .ToArray();
+        if (modelRecords.Length == 0)
+        {
+            FrameModel();
+            return;
+        }
+
+        var bounds = modelRecords[0].Bounds;
+        for (var index = 1; index < modelRecords.Length; index++)
+        {
+            bounds.Encapsulate(modelRecords[index].Bounds);
+        }
+
+        modelRoot.GetComponent<IfcModelLodController>()?.Reveal(
+            modelRecords.SelectMany(record => record.Renderers).ToArray());
         FrameBounds(bounds);
     }
 
@@ -1835,9 +1873,19 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
 
         var fileName = $"IFC-Operations-{DateTime.Now:yyyyMMdd-HHmmss}.csv";
-        var path = Path.Combine(Application.persistentDataPath, fileName);
+        if (!RuntimeSaveFileDialog.TryGetSavePath(
+                "Lưu báo cáo vận hành CSV",
+                fileName,
+                "csv",
+                "CSV files",
+                out var path))
+        {
+            HidePopups();
+            return;
+        }
+
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(true));
-        SetImportStatus($"Đã xuất báo cáo: {fileName}");
+        SetImportStatus($"Đã xuất báo cáo: {Path.GetFileName(path)}");
         Debug.Log($"IFC operations report exported to {path}");
         HidePopups();
     }
@@ -1922,9 +1970,19 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         builder.AppendLine("}");
 
         var fileName = $"IFC-BIM-Data-{DateTime.Now:yyyyMMdd-HHmmss}.json";
-        var path = Path.Combine(Application.persistentDataPath, fileName);
+        if (!RuntimeSaveFileDialog.TryGetSavePath(
+                "Lưu dữ liệu BIM JSON",
+                fileName,
+                "json",
+                "JSON files",
+                out var path))
+        {
+            HidePopups();
+            return;
+        }
+
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
-        SetImportStatus($"Đã xuất dữ liệu BIM: {fileName}");
+        SetImportStatus($"Đã xuất dữ liệu BIM: {Path.GetFileName(path)}");
         Debug.Log($"IFC BIM JSON exported to {path}");
         HidePopups();
     }
@@ -1939,7 +1997,16 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
         var generatedAt = DateTime.Now;
         var fileName = $"IFC-Operations-{generatedAt:yyyyMMdd-HHmmss}.pdf";
-        var path = Path.Combine(Application.persistentDataPath, fileName);
+        if (!RuntimeSaveFileDialog.TryGetSavePath(
+                "Lưu báo cáo vận hành PDF",
+                fileName,
+                "pdf",
+                "PDF files",
+                out var path))
+        {
+            return;
+        }
+
         File.WriteAllBytes(
             path,
             IfcOperationsReport.BuildPdf(
@@ -1947,10 +2014,11 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                 generatedAt,
                 loader?.LoadedModels.Count ?? 0,
                 BuildReportRows()));
-        SetImportStatus($"Đã tạo báo cáo PDF: {fileName}");
+        var savedFileName = Path.GetFileName(path);
+        SetImportStatus($"Đã tạo báo cáo PDF: {savedFileName}");
         if (analyticsGeneratedAt != null)
         {
-            analyticsGeneratedAt.text = $"Đã xuất {fileName}";
+            analyticsGeneratedAt.text = $"Đã xuất {savedFileName}";
         }
         Debug.Log($"IFC operations PDF exported to {path}");
     }

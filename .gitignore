@@ -10,6 +10,8 @@
 /Tools/XbimIfcConverter/[Oo]bj/
 /[Bb]uild/
 /[Bb]uilds/
+/BuildDeepFix/
+/BuildVerification/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 *.log

@@ -305,6 +305,15 @@ public sealed class OsmMapLoader : MonoBehaviour
             StartCoroutine(RequestWorker(streamGeneration));
         }
 
+        // Let geolocation and camera framing finish before choosing the first
+        // tile window, especially when a newly imported model is far away.
+        yield return null;
+        if (!streaming || mapRoot == null)
+        {
+            loadRoutine = null;
+            yield break;
+        }
+
         EvaluateStreaming();
         Debug.Log(
             $"Started dynamic OpenStreetMap streaming at {latitude:F8}, " +

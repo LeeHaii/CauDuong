@@ -345,6 +345,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
             $"IFC import complete: {LastSourceTriangleCount:N0} to " +
             $"{LastOptimizedTriangleCount:N0} triangles " +
             $"({LastTriangleReduction:P1} reduction).");
+        LogRenderState(loadedModel);
         LoadCompleted?.Invoke(loadedModel);
         ModelsChanged?.Invoke();
         StartNextQueuedImport();
@@ -972,16 +973,50 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
     private static Shader GetIfcShader()
     {
+        var projectShader = Resources.Load<Shader>("Shaders/IfcDoubleSided");
+        if (projectShader != null)
+        {
+            return projectShader;
+        }
+
         if (GraphicsSettings.currentRenderPipeline == null)
         {
-            return Resources.Load<Shader>("Shaders/IfcDoubleSided") ??
-                   Shader.Find("CauDuong/IFC Double Sided") ??
+            return Shader.Find("CauDuong/IFC Double Sided") ??
                    Shader.Find("Standard");
         }
 
         return Shader.Find("Universal Render Pipeline/Lit") ??
                Shader.Find("HDRP/Lit") ??
                Shader.Find("Standard");
+    }
+
+    private static void LogRenderState(GameObject model)
+    {
+        var renderers = model.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+        {
+            Debug.LogWarning($"IFC render state '{model.name}': no renderers.");
+            return;
+        }
+
+        var bounds = renderers[0].bounds;
+        var enabledCount = 0;
+        foreach (var renderer in renderers)
+        {
+            bounds.Encapsulate(renderer.bounds);
+            if (renderer.enabled && renderer.gameObject.activeInHierarchy)
+            {
+                enabledCount++;
+            }
+        }
+
+        var material = renderers[0].sharedMaterial;
+        var shader = material != null ? material.shader : null;
+        Debug.Log(
+            $"IFC render state '{model.name}': {enabledCount}/{renderers.Length} " +
+            $"renderers active, bounds {bounds.center:F2} / {bounds.size:F2}, " +
+            $"shader '{(shader != null ? shader.name : "<none>")}', " +
+            $"supported {shader != null && shader.isSupported}.");
     }
 
     private static void ConfigureTransparency(Material material, float alpha)

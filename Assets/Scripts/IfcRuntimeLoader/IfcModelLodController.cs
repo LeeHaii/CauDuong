@@ -5,7 +5,7 @@ using UnityEngine;
 public sealed class IfcModelLodController : MonoBehaviour
 {
     [SerializeField] private Camera viewingCamera;
-    [SerializeField, Min(0.05f)] private float minimumPixelDiameter = 1.5f;
+    [SerializeField, Min(0.01f)] private float minimumPixelDiameter = 0.05f;
     [SerializeField, Min(0.05f)] private float evaluationInterval = 0.2f;
     [SerializeField, Min(0f)] private float selectedRevealSeconds = 4f;
 
