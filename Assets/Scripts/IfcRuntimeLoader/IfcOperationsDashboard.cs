@@ -1725,7 +1725,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             }
 
             var total = values.Sum();
-            var label = new Label($"{definition.Symbol}\n{total:N0}")
+            var label = new Label($"{definition.DisplayName}\n{total:N0}")
             {
                 tooltip = definition.DisplayName
             };
