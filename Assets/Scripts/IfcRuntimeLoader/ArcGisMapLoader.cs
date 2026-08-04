@@ -75,6 +75,12 @@ public sealed class ArcGisMapLoader : MonoBehaviour
     [SerializeField] private string initialBasemap = "ArcGIS World Street";
     [SerializeField] private Vector3 modelFrameCorrectionEuler = new(-90f, 0f, 0f);
 
+    [Header("Runtime Performance")]
+    [Tooltip("Scales ArcGIS tile detail independently from the final render resolution.")]
+    [SerializeField, Range(0.1f, 1f)] private float arcGisQualityScalingFactor = 0.6f;
+    [Tooltip("Prevents the SDK from extending the camera to hundreds of kilometres in local-map mode.")]
+    [SerializeField, Min(1_000f)] private float maximumFarClipDistance = 20_000f;
+
     private readonly Dictionary<GameObject, GameObject> modelAnchors = new();
     private readonly Dictionary<string, ProjectedFrame> projectedFrames = new();
     private ArcGISMapComponent mapComponent;
@@ -199,6 +205,8 @@ public sealed class ArcGisMapLoader : MonoBehaviour
             mapComponent.APIKey = apiKey;
         }
 
+        mapComponent.MeshCollidersEnabled = false;
+
         mapComponent.OriginPosition = new ArcGISPoint(
             longitude,
             latitude,
@@ -231,10 +239,17 @@ public sealed class ArcGisMapLoader : MonoBehaviour
             viewingCamera.transform.SetParent(mapComponent.transform, true);
         }
 
-        if (!viewingCamera.TryGetComponent<ArcGISCameraComponent>(out _))
+        if (!viewingCamera.TryGetComponent<ArcGISCameraComponent>(out var arcGisCamera))
         {
-            viewingCamera.gameObject.AddComponent<ArcGISCameraComponent>();
+            arcGisCamera = viewingCamera.gameObject.AddComponent<ArcGISCameraComponent>();
         }
+
+
+        arcGisCamera.qualityScalingFactor = arcGisQualityScalingFactor;
+        arcGisCamera.UpdateClippingPlanes = false;
+        viewingCamera.farClipPlane = Mathf.Min(
+            viewingCamera.farClipPlane,
+            maximumFarClipDistance);
     }
 
     private void RebuildMap()
@@ -468,5 +483,14 @@ public sealed class ArcGisMapLoader : MonoBehaviour
 
         resolvedOption = default;
         return false;
+    }
+
+    private void OnValidate()
+    {
+        arcGisQualityScalingFactor = Mathf.Clamp(
+            arcGisQualityScalingFactor,
+            0.1f,
+            1f);
+        maximumFarClipDistance = Mathf.Max(1_000f, maximumFarClipDistance);
     }
 }

@@ -19,12 +19,18 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private const int OptimizationRevision = 2;
     private const int MaxRecordCount = 10_000_000;
     private const int MaxStringLength = 1_000_000;
+    private const float MinimumStaticBatchSettleSeconds = 8f;
     private const string SourcePathProperty = "Source IFC Path";
 
     [Header("Generated Model")]
     [SerializeField] private Transform modelParent;
     [SerializeField] private Material defaultMaterial;
     [SerializeField] private bool generateMeshColliders;
+    [Tooltip("Combines IFC renderers that share a material while preserving their individual GameObjects and colliders.")]
+    [SerializeField] private bool enableRuntimeStaticBatching = true;
+    [Tooltip("Allows ArcGIS high-precision transforms to settle before building the final static batches.")]
+    [SerializeField, Min(MinimumStaticBatchSettleSeconds)]
+    private float staticBatchSettleSeconds = MinimumStaticBatchSettleSeconds;
 
     [Header("Geometry Optimization")]
     [Tooltip("Maximum curve-to-segment deviation in millimetres. Higher values reduce triangle counts.")]
@@ -69,9 +75,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private readonly Dictionary<GameObject, string> modelSourcePaths = new();
     private readonly Queue<string> pendingImports = new();
     private Dictionary<int, Material> activeMaterialCache = new();
+    private Dictionary<IfcMaterialAppearance, Material> activeMaterialsByAppearance = new();
     private GameObject loadedModel;
     private GameObject importingModel;
     private Coroutine loadRoutine;
+    private Coroutine staticBatchFinalizeRoutine;
+    private bool staticBatchPending;
+    private float staticBatchDueTime;
 
     public bool IsLoading { get; private set; }
     public GameObject LoadedModel => loadedModel;
@@ -114,7 +124,35 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
     private void OnEnable()
     {
+        staticBatchSettleSeconds = Mathf.Max(
+            MinimumStaticBatchSettleSeconds,
+            staticBatchSettleSeconds);
         RecoverLoadedModelsAfterDomainReload();
+    }
+
+    private void LateUpdate()
+    {
+        if (!staticBatchPending)
+        {
+            return;
+        }
+
+        if (pendingImports.Count > 0)
+        {
+            staticBatchPending = false;
+            IsLoading = false;
+            StartNextQueuedImport();
+            return;
+        }
+
+        if (Time.unscaledTime < staticBatchDueTime)
+        {
+            return;
+        }
+
+        staticBatchPending = false;
+        staticBatchFinalizeRoutine = StartCoroutine(
+            FinishStaticBatchingAtEndOfFrame());
     }
 
     public void LoadIFC(string path)
@@ -338,8 +376,6 @@ public sealed class XbimIfcLoader : MonoBehaviour
             yield break;
         }
 
-        IsLoading = false;
-        loadRoutine = null;
         var lodController = loadedModel.GetComponent<IfcModelLodController>() ??
                             loadedModel.AddComponent<IfcModelLodController>();
         lodController.Rebuild();
@@ -352,8 +388,73 @@ public sealed class XbimIfcLoader : MonoBehaviour
             $"({LastTriangleReduction:P1} reduction).");
         LogRenderState(loadedModel);
         LoadCompleted?.Invoke(loadedModel);
+        IsLoading = false;
+        loadRoutine = null;
         ModelsChanged?.Invoke();
-        StartNextQueuedImport();
+        if (pendingImports.Count > 0)
+        {
+            StartNextQueuedImport();
+        }
+        else
+        {
+            ScheduleStaticBatching();
+        }
+    }
+
+    private void ScheduleStaticBatching()
+    {
+        if (!enableRuntimeStaticBatching)
+        {
+            return;
+        }
+
+        staticBatchPending = true;
+        staticBatchDueTime = Time.unscaledTime + staticBatchSettleSeconds;
+        IsLoading = true;
+    }
+
+    private void BuildStaticBatches()
+    {
+        foreach (var model in loadedModels)
+        {
+            if (model == null)
+            {
+                continue;
+            }
+
+            var renderers = model.GetComponentsInChildren<MeshRenderer>(true);
+            var needsBatching = false;
+            foreach (var renderer in renderers)
+            {
+                if (!renderer.isPartOfStaticBatch)
+                {
+                    needsBatching = true;
+                    break;
+                }
+            }
+
+            if (needsBatching)
+            {
+                StaticBatchingUtility.Combine(model);
+            }
+        }
+    }
+
+    private IEnumerator FinishStaticBatchingAtEndOfFrame()
+    {
+        yield return new WaitForEndOfFrame();
+        if (pendingImports.Count > 0)
+        {
+            IsLoading = false;
+            staticBatchFinalizeRoutine = null;
+            StartNextQueuedImport();
+            yield break;
+        }
+
+        BuildStaticBatches();
+        IsLoading = false;
+        staticBatchFinalizeRoutine = null;
+        ModelsChanged?.Invoke();
     }
 
     private static bool IsFileReady(string path)
@@ -449,6 +550,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         loadedModel = new GameObject(modelName);
         importingModel = loadedModel;
         activeMaterialCache = new Dictionary<int, Material>();
+        activeMaterialsByAppearance = new Dictionary<IfcMaterialAppearance, Material>();
         LastSourceTriangleCount = isOptimizedCache
             ? cachedSourceTriangleCount
             : 0;
@@ -932,6 +1034,17 @@ public sealed class XbimIfcLoader : MonoBehaviour
             return cached;
         }
 
+        var appearance = new IfcMaterialAppearance(
+            style.Diffuse,
+            style.Specular,
+            style.Smoothness,
+            defaultMaterial != null && style.Label == 0);
+        if (activeMaterialsByAppearance.TryGetValue(appearance, out cached))
+        {
+            activeMaterialCache[style.Label] = cached;
+            return cached;
+        }
+
         Material material;
         if (defaultMaterial != null && style.Label == 0)
         {
@@ -965,6 +1078,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         ConfigureTransparency(material, style.Diffuse.a);
         activeMaterialCache[style.Label] = material;
+        activeMaterialsByAppearance[appearance] = material;
         if (importingModel != null &&
             modelMaterials.TryGetValue(importingModel, out var materials))
         {
@@ -1191,6 +1305,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
     {
         yield return null;
         ModelsChanged?.Invoke();
+        if (pendingImports.Count == 0 && !IsLoading)
+        {
+            ScheduleStaticBatching();
+        }
     }
 
     private void OnDestroy()
@@ -1583,6 +1701,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
             broadSurfaceMeshQuality,
             0.02f,
             standardMeshQuality);
+        staticBatchSettleSeconds = Mathf.Max(
+            MinimumStaticBatchSettleSeconds,
+            staticBatchSettleSeconds);
         meshesPerFrame = Mathf.Max(1, meshesPerFrame);
         sourceTrianglesPerFrame = Mathf.Max(1_000, sourceTrianglesPerFrame);
         converterTimeoutSeconds = Mathf.Max(30f, converterTimeoutSeconds);
@@ -1703,6 +1824,54 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 new Color(0.78f, 0.8f, 0.82f, 1f),
                 new Color(0.04f, 0.04f, 0.04f, 1f),
                 0.45f);
+        }
+    }
+
+    private readonly struct IfcMaterialAppearance : IEquatable<IfcMaterialAppearance>
+    {
+        private readonly uint diffuse;
+        private readonly uint specular;
+        private readonly byte smoothness;
+        private readonly bool usesDefaultMaterial;
+
+        public IfcMaterialAppearance(
+            Color diffuseColor,
+            Color specularColor,
+            float materialSmoothness,
+            bool useDefaultMaterial)
+        {
+            diffuse = PackColor(diffuseColor);
+            specular = PackColor(specularColor);
+            smoothness = (byte)Mathf.RoundToInt(
+                Mathf.Clamp01(materialSmoothness) * byte.MaxValue);
+            usesDefaultMaterial = useDefaultMaterial;
+        }
+
+        public bool Equals(IfcMaterialAppearance other)
+        {
+            return diffuse == other.diffuse &&
+                   specular == other.specular &&
+                   smoothness == other.smoothness &&
+                   usesDefaultMaterial == other.usesDefaultMaterial;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is IfcMaterialAppearance other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(diffuse, specular, smoothness, usesDefaultMaterial);
+        }
+
+        private static uint PackColor(Color color)
+        {
+            var packed = (Color32)color;
+            return packed.r |
+                   (uint)packed.g << 8 |
+                   (uint)packed.b << 16 |
+                   (uint)packed.a << 24;
         }
     }
 
