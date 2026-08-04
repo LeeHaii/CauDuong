@@ -283,6 +283,7 @@ MonoBehaviour:
   touchPanSpeed: 1
   minPitch: 0
   maxPitch: 90
+  dashboardDocument: {fileID: 0}
 --- !u!1 &210870370
 GameObject:
   m_ObjectHideFlags: 0
@@ -1156,10 +1157,10 @@ GameObject:
   - component: {fileID: 1029702756}
   - component: {fileID: 1029702755}
   - component: {fileID: 1029702758}
-  - component: {fileID: 1029702759}
   - component: {fileID: 1029702761}
   - component: {fileID: 1029702760}
   - component: {fileID: 1029702762}
+  - component: {fileID: 1029702763}
   m_Layer: 0
   m_Name: IFC Runtime Loader
   m_TagString: Untagged
@@ -1242,44 +1243,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::IfcGeoPositionExtractor
   loader: {fileID: 0}
-  georeference: {fileID: 0}
-  createGeoreferenceIfMissing: 1
-  attachGlobeAnchor: 1
   useVn2000LocalOriginFallback: 1
   vn2000CentralMeridianDegrees: 105
   vn2000ScaleFactor: 0.9999
---- !u!114 &1029702759
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1029702754}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 059e941265eb82a46b3b3ec289b81d6a, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::OsmMapLoader
-  geoPositionExtractor: {fileID: 0}
-  viewingCamera: {fileID: 0}
-  tileUrlTemplate: https://tile.openstreetmap.org/{z}/{x}/{y}.png
-  userAgent: CauDuong-IFC-Viewer/1.0
-  preferredZoom: 18
-  minimumZoom: 12
-  rootTileRadius: 1
-  splitThresholdPixels: 520
-  mergeThresholdPixels: 300
-  maxResidentTiles: 192
-  evaluationInterval: 0.15
-  offscreenRetentionSeconds: 2
-  maxConcurrentRequests: 6
-  maxTextureFinalizationsPerFrame: 1
-  failedRequestRetrySeconds: 15
-  cacheFreshnessDays: 7
-  cacheRetentionDays: 30
-  verticalOffsetMetres: -0.05
-  skirtDepthMetres: 0.25
-  showAttribution: 0
 --- !u!114 &1029702760
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1294,6 +1260,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::IfcOperationsDashboard
   loader: {fileID: 0}
   runtimeLoader: {fileID: 0}
+  arcGisMapLoader: {fileID: 0}
   loadDefaultModelsOnStart: 1
   defaultModelLimit: 2
   viewingCamera: {fileID: 0}
@@ -1337,6 +1304,23 @@ MonoBehaviour:
   viewingCamera: {fileID: 0}
   dashboardDocument: {fileID: 0}
   measurementColor: {r: 0.08, g: 0.75, b: 1, a: 1}
+--- !u!114 &1029702763
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1029702754}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6b254d0dc51f87a41aa0a4c3ddd6d023, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::ArcGisMapLoader
+  geoPositionExtractor: {fileID: 0}
+  viewingCamera: {fileID: 0}
+  apiKey:
+  initialBasemap: ArcGIS World Street
+  modelFrameCorrectionEuler: {x: -90, y: 0, z: 0}
 --- !u!1 &1171116991
 GameObject:
   m_ObjectHideFlags: 0

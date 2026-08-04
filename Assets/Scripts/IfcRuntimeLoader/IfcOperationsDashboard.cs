@@ -25,6 +25,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     [Header("IFC Integration")]
     [SerializeField] private XbimIfcLoader loader;
     [SerializeField] private RuntimeIfcLoader runtimeLoader;
+    [SerializeField] private ArcGisMapLoader arcGisMapLoader;
 
     [Header("Startup")]
     [SerializeField] private bool loadDefaultModelsOnStart = true;
@@ -90,6 +91,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     private TextField displayNameInput;
     private TextField maintenanceNoteInput;
     private DropdownField statusDropdown;
+    private DropdownField mapSourceDropdown;
     private TextField customPropertyKeyInput;
     private TextField customPropertyValueInput;
     private Button customPropertySaveButton;
@@ -201,6 +203,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
     {
         loader ??= FindFirstObjectByType<XbimIfcLoader>();
         runtimeLoader ??= FindFirstObjectByType<RuntimeIfcLoader>();
+        arcGisMapLoader ??= FindFirstObjectByType<ArcGisMapLoader>();
         if (viewingCamera == null)
         {
             viewingCamera = Camera.main;
@@ -370,9 +373,12 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
 
         statusDropdown.choices = StatusChoices;
         statusDropdown.index = 0;
-        var mapSource = root.Q<DropdownField>("map-source");
-        mapSource.choices = new List<string> { "OpenStreetMap" };
-        mapSource.index = 0;
+        mapSourceDropdown = root.Q<DropdownField>("map-source");
+        mapSourceDropdown.choices = ArcGisMapLoader.AvailableBasemaps.ToList();
+        mapSourceDropdown.value = arcGisMapLoader != null
+            ? arcGisMapLoader.ActiveBasemap
+            : mapSourceDropdown.choices[0];
+        mapSourceDropdown.RegisterValueChangedCallback(HandleMapSourceChanged);
         detailsPanel.style.display = DisplayStyle.None;
         modelManagerPopup.style.display = DisplayStyle.None;
         measurementPopup.style.display = DisplayStyle.None;
@@ -393,6 +399,18 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         uiBound = true;
         BuildModelList();
         RefreshDashboard();
+    }
+
+    private void HandleMapSourceChanged(ChangeEvent<string> changeEvent)
+    {
+        ResolveDependencies();
+        if (arcGisMapLoader == null || !arcGisMapLoader.SetBasemap(changeEvent.newValue))
+        {
+            SetImportStatus("Không thể chuyển kiểu bản đồ ArcGIS.");
+            return;
+        }
+
+        SetImportStatus($"Đã chuyển sang {arcGisMapLoader.ActiveBasemap}.");
     }
 
     private bool HasBoundUi()

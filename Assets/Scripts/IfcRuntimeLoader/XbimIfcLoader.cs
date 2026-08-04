@@ -105,6 +105,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
         {
             gameObject.AddComponent<IfcGeoPositionExtractor>();
         }
+
+        if (!TryGetComponent<ArcGisMapLoader>(out _))
+        {
+            gameObject.AddComponent<ArcGisMapLoader>();
+        }
     }
 
     private void OnEnable()
@@ -668,8 +673,6 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 var meshCollider = element.AddComponent<MeshCollider>();
                 meshCollider.cookingOptions =
                     MeshColliderCookingOptions.CookForFasterSimulation |
-                    MeshColliderCookingOptions.EnableMeshCleaning |
-                    MeshColliderCookingOptions.WeldColocatedVertices |
                     MeshColliderCookingOptions.UseFastMidphase;
                 meshCollider.sharedMesh = mesh;
             }
