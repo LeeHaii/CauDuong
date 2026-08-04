@@ -10,7 +10,7 @@
                 </ui:VisualElement>
             </ui:VisualElement>
             <ui:VisualElement class="toolbar-actions">
-                <ui:DropdownField name="map-source" value="OpenStreetMap" class="map-dropdown toolbar-secondary" style="padding-left: 0; padding-right: 0; margin-left: 8px;"/>
+                <ui:DropdownField name="map-source" value="ArcGIS World Street" class="map-dropdown toolbar-secondary" style="padding-left: 0; padding-right: 0; margin-left: 8px;"/>
                 <ui:Button name="frame-model-button" text="Mô Hình Tuyến Vành Đai 3" class="toolbar-button toolbar-button-primary"/>
                 <ui:Button name="browse-ifc-button" text="Tải File .IFC (Nhiều File)" class="toolbar-button"/>
                 <ui:Button name="layer-button" text="Lớp IFC (0)" class="toolbar-button toolbar-button-primary"/>

@@ -8,10 +8,14 @@
 /[Oo]bj/
 /Tools/XbimIfcConverter/[Bb]in/
 /Tools/XbimIfcConverter/[Oo]bj/
+/Packages/com.esri.arcgis-maps-sdk/
+/Assets/Resources/ArcGISMapsSDK/
+/Assets/Resources/ArcGISMapsSDK.meta
 /[Bb]uild/
 /[Bb]uilds/
 /BuildDeepFix/
 /BuildVerification/
+/BuildArcGISVerification/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 *.log

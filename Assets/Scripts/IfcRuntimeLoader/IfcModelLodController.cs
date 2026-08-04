@@ -5,20 +5,27 @@ using UnityEngine;
 public sealed class IfcModelLodController : MonoBehaviour
 {
     [SerializeField] private Camera viewingCamera;
-    [SerializeField, Min(0.01f)] private float minimumPixelDiameter = 0.05f;
-    [SerializeField, Min(0.05f)] private float evaluationInterval = 0.2f;
+    [SerializeField, Min(0.01f)] private float minimumPixelDiameter = 0.5f;
+    [SerializeField, Min(0.05f)] private float evaluationInterval = 0.25f;
     [SerializeField, Min(0f)] private float selectedRevealSeconds = 4f;
 
     private readonly List<Renderer> renderers = new();
     private readonly Dictionary<Renderer, float> revealUntil = new();
+    private readonly Dictionary<Renderer, bool> cullingStates = new();
     private float nextEvaluationTime;
+    private Vector3 lastCameraPosition;
+    private Quaternion lastCameraRotation;
+    private float lastCameraProjection;
+    private bool evaluationRequired = true;
 
     public void Rebuild()
     {
         ResetCulling();
         renderers.Clear();
+        cullingStates.Clear();
         GetComponentsInChildren(true, renderers);
         viewingCamera ??= Camera.main;
+        evaluationRequired = true;
         Evaluate();
     }
 
@@ -33,8 +40,10 @@ public sealed class IfcModelLodController : MonoBehaviour
             }
 
             revealUntil[renderer] = expiry;
-            renderer.forceRenderingOff = false;
+            SetCullingState(renderer, false);
         }
+
+        evaluationRequired = true;
     }
 
     private void OnEnable()
@@ -60,6 +69,13 @@ public sealed class IfcModelLodController : MonoBehaviour
         }
 
         nextEvaluationTime = Time.unscaledTime + evaluationInterval;
+        if (!evaluationRequired &&
+            revealUntil.Count == 0 &&
+            !HasCameraChanged())
+        {
+            return;
+        }
+
         Evaluate();
     }
 
@@ -71,6 +87,8 @@ public sealed class IfcModelLodController : MonoBehaviour
             return;
         }
 
+        RememberCameraState();
+        evaluationRequired = false;
         var now = Time.unscaledTime;
         foreach (var renderer in renderers)
         {
@@ -83,17 +101,53 @@ public sealed class IfcModelLodController : MonoBehaviour
             {
                 if (expiry > now)
                 {
-                    renderer.forceRenderingOff = false;
+                    SetCullingState(renderer, false);
                     continue;
                 }
 
                 revealUntil.Remove(renderer);
             }
 
-            renderer.forceRenderingOff =
+            SetCullingState(
+                renderer,
                 CalculateProjectedDiameterPixels(viewingCamera, renderer.bounds) <
-                minimumPixelDiameter;
+                minimumPixelDiameter);
         }
+    }
+
+    private bool HasCameraChanged()
+    {
+        if (viewingCamera == null)
+        {
+            return false;
+        }
+
+        var projection = viewingCamera.orthographic
+            ? viewingCamera.orthographicSize
+            : viewingCamera.fieldOfView;
+        return (viewingCamera.transform.position - lastCameraPosition).sqrMagnitude > 0.01f ||
+               Quaternion.Angle(viewingCamera.transform.rotation, lastCameraRotation) > 0.05f ||
+               Mathf.Abs(projection - lastCameraProjection) > 0.01f;
+    }
+
+    private void RememberCameraState()
+    {
+        lastCameraPosition = viewingCamera.transform.position;
+        lastCameraRotation = viewingCamera.transform.rotation;
+        lastCameraProjection = viewingCamera.orthographic
+            ? viewingCamera.orthographicSize
+            : viewingCamera.fieldOfView;
+    }
+
+    private void SetCullingState(Renderer renderer, bool culled)
+    {
+        if (cullingStates.TryGetValue(renderer, out var previous) && previous == culled)
+        {
+            return;
+        }
+
+        cullingStates[renderer] = culled;
+        renderer.forceRenderingOff = culled;
     }
 
     public static float CalculateProjectedDiameterPixels(Camera camera, Bounds bounds)
@@ -128,5 +182,6 @@ public sealed class IfcModelLodController : MonoBehaviour
         }
 
         revealUntil.Clear();
+        cullingStates.Clear();
     }
 }

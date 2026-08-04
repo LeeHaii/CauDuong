@@ -1,7 +1,6 @@
 {
   "dependencies": {
     "com.besty.unity-skills": "https://github.com/Besty0728/Unity-Skills.git?path=/SkillsForUnity",
-    "com.cesium.unity": "1.24.0",
     "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main",
     "com.unity.addressables": "2.9.1",
     "com.unity.ai.navigation": "2.0.12",
@@ -52,15 +51,6 @@
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0"
   },
-  "scopedRegistries": [
-    {
-      "name": "Cesium",
-      "url": "https://unity.pkg.cesium.com",
-      "scopes": [
-        "com.cesium.unity"
-      ]
-    }
-  ],
   "testables": [
     "com.besty.unity-skills"
   ]

@@ -3,13 +3,43 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using CesiumForUnity;
-using Unity.Mathematics;
 using UnityEngine;
 
 [DisallowMultipleComponent]
 public sealed class IfcGeoPositionExtractor : MonoBehaviour
 {
+    public readonly struct ProjectedPlacement
+    {
+        public ProjectedPlacement(
+            string coordinateSystemKey,
+            double easting,
+            double northing,
+            double elevation,
+            double latitude,
+            double longitude,
+            double centralMeridianDegrees,
+            double projectionScaleFactor)
+        {
+            CoordinateSystemKey = coordinateSystemKey;
+            Easting = easting;
+            Northing = northing;
+            Elevation = elevation;
+            Latitude = latitude;
+            Longitude = longitude;
+            CentralMeridianDegrees = centralMeridianDegrees;
+            ProjectionScaleFactor = projectionScaleFactor;
+        }
+
+        public string CoordinateSystemKey { get; }
+        public double Easting { get; }
+        public double Northing { get; }
+        public double Elevation { get; }
+        public double Latitude { get; }
+        public double Longitude { get; }
+        public double CentralMeridianDegrees { get; }
+        public double ProjectionScaleFactor { get; }
+    }
+
     private static readonly Regex NumberPattern = new(
         @"[-+]?(?:\d+(?:[.,]\d+)?|\.\d+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -64,9 +94,6 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
     };
 
     [SerializeField] private XbimIfcLoader loader;
-    [SerializeField] private CesiumGeoreference georeference;
-    [SerializeField] private bool createGeoreferenceIfMissing = true;
-    [SerializeField] private bool attachGlobeAnchor = true;
     [SerializeField] private bool useVn2000LocalOriginFallback = true;
     [SerializeField] private double vn2000CentralMeridianDegrees = 105d;
     [SerializeField] private double vn2000ScaleFactor = 0.9999d;
@@ -76,6 +103,119 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
     public double LastElevation { get; private set; }
 
     public event Action<GameObject, double, double, double> GeoPositionApplied;
+
+    public bool TryReadProjectedPlacement(
+        GameObject modelRoot,
+        out ProjectedPlacement placement)
+    {
+        placement = default;
+        if (modelRoot == null)
+        {
+            return false;
+        }
+
+        var metadataComponents =
+            modelRoot.GetComponentsInChildren<IfcMetadataComponent>(true);
+        foreach (var metadata in metadataComponents)
+        {
+            var properties = metadata.Properties;
+            if (!TryGetProperty(
+                    properties,
+                    new[] { "MapConversion/OriginEasting", "OriginEasting" },
+                    out var eastingText) ||
+                !TryGetProperty(
+                    properties,
+                    new[] { "MapConversion/OriginNorthing", "OriginNorthing" },
+                    out var northingText) ||
+                !TryGetProperty(
+                    properties,
+                    new[] { "MapConversion/ProjectedCRS", "ProjectedCRS" },
+                    out var projectedCrs) ||
+                !TryParseNumber(eastingText, out var easting) ||
+                !TryParseNumber(northingText, out var northing) ||
+                !TryReadVn2000ProjectionParameters(
+                    projectedCrs,
+                    out var centralMeridian,
+                    out var projectionScale))
+            {
+                continue;
+            }
+
+            var elevation = 0d;
+            if (TryGetProperty(properties, ElevationKeys, out var elevationText))
+            {
+                TryParseNumber(elevationText, out elevation);
+            }
+
+            if (!Vn2000CoordinateConverter.TryConvertToWgs84(
+                    easting,
+                    northing,
+                    centralMeridian,
+                    projectionScale,
+                    out var latitude,
+                    out var longitude))
+            {
+                continue;
+            }
+
+            var coordinateSystemKey = string.Format(
+                CultureInfo.InvariantCulture,
+                "VN2000|{0:R}|{1:R}",
+                centralMeridian,
+                projectionScale);
+            placement = new ProjectedPlacement(
+                coordinateSystemKey,
+                easting,
+                northing,
+                elevation,
+                latitude,
+                longitude,
+                centralMeridian,
+                projectionScale);
+            return true;
+        }
+
+        foreach (var metadata in metadataComponents)
+        {
+            if (!TryReadLocalOrigin(
+                    metadata.Properties,
+                    out var easting,
+                    out var northing,
+                    out var elevation))
+            {
+                continue;
+            }
+
+            if (!Vn2000CoordinateConverter.TryConvertToWgs84(
+                    easting,
+                    northing,
+                    vn2000CentralMeridianDegrees,
+                    vn2000ScaleFactor,
+                    out var latitude,
+                    out var longitude))
+            {
+                continue;
+            }
+
+            var key = string.Format(
+                CultureInfo.InvariantCulture,
+                "VN2000|{0:R}|{1:R}",
+                vn2000CentralMeridianDegrees,
+                vn2000ScaleFactor);
+            placement = new ProjectedPlacement(
+                key,
+                easting,
+                northing,
+                elevation,
+                latitude,
+                longitude,
+                vn2000CentralMeridianDegrees,
+                vn2000ScaleFactor);
+            return true;
+        }
+
+        return false;
+    }
 
     private void OnEnable()
     {
@@ -117,25 +257,7 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
             return false;
         }
 
-        var targetGeoreference = ResolveGeoreference();
-        if (targetGeoreference == null)
-        {
-            Debug.LogWarning("No CesiumGeoreference is available for the imported IFC model.");
-            return false;
-        }
-
-        targetGeoreference.SetOriginLongitudeLatitudeHeight(
-            longitude,
-            latitude,
-            elevation);
-
-        PlaceModelAtCoordinates(
-            modelRoot,
-            targetGeoreference,
-            longitude,
-            latitude,
-            elevation,
-            geoMetadata.Properties);
+        ApplyLocalMapTransform(modelRoot, geoMetadata.Properties);
 
         LastLatitude = latitude;
         LastLongitude = longitude;
@@ -286,6 +408,102 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
                double.IsFinite(elevation);
     }
 
+    private static bool TryReadLocalOrigin(
+        IReadOnlyDictionary<string, string> properties,
+        out double easting,
+        out double northing,
+        out double elevation)
+    {
+        easting = 0d;
+        northing = 0d;
+        elevation = 0d;
+        if (properties == null ||
+            !TryGetProperty(properties, LocalOriginKeys, out var originText))
+        {
+            return false;
+        }
+
+        var matches = NumberPattern.Matches(originText);
+        if (matches.Count < 3 ||
+            !TryParseNumber(matches[0].Value, out easting) ||
+            !TryParseNumber(matches[1].Value, out northing) ||
+            !TryParseNumber(matches[2].Value, out elevation))
+        {
+            return false;
+        }
+
+        var metresPerUnit = 1d;
+        if (TryGetProperty(properties, LengthScaleKeys, out var scaleText) &&
+            (!TryParseNumber(scaleText, out metresPerUnit) ||
+             metresPerUnit <= 0d))
+        {
+            return false;
+        }
+
+        easting *= metresPerUnit;
+        northing *= metresPerUnit;
+        elevation *= metresPerUnit;
+        return double.IsFinite(easting) &&
+               double.IsFinite(northing) &&
+               double.IsFinite(elevation);
+    }
+
+    private static bool TryReadVn2000ProjectionParameters(
+        string projectedCrs,
+        out double centralMeridian,
+        out double scaleFactor)
+    {
+        centralMeridian = 0d;
+        scaleFactor = 0d;
+        if (string.IsNullOrWhiteSpace(projectedCrs) ||
+            (!projectedCrs.Contains("VN2000", StringComparison.OrdinalIgnoreCase) &&
+             !projectedCrs.Contains("VN-2000", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        var utmMatch = Regex.Match(
+            projectedCrs,
+            @"UTM[^0-9]*(?<zone>[0-9]{1,2})",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (utmMatch.Success &&
+            int.TryParse(
+                utmMatch.Groups["zone"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var zone) &&
+            zone is >= 1 and <= 60)
+        {
+            centralMeridian = zone * 6d - 183d;
+            scaleFactor = 0.9996d;
+            return true;
+        }
+
+        var meridianMatch = Regex.Match(
+            projectedCrs,
+            @"(?<degrees>[0-9]{3})[dD](?<minutes>[0-9]{2})",
+            RegexOptions.CultureInvariant);
+        if (!meridianMatch.Success ||
+            !double.TryParse(
+                meridianMatch.Groups["degrees"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var degrees) ||
+            !double.TryParse(
+                meridianMatch.Groups["minutes"].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var minutes) ||
+            minutes >= 60d)
+        {
+            return false;
+        }
+
+        centralMeridian = degrees + minutes / 60d;
+        scaleFactor = 0.9999d;
+        return true;
+    }
+
     public static bool TryParseAngle(string value, out double degrees)
     {
         degrees = 0d;
@@ -365,29 +583,8 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
         }
     }
 
-    private CesiumGeoreference ResolveGeoreference()
-    {
-        if (georeference != null)
-        {
-            return georeference;
-        }
-
-        georeference = FindFirstObjectByType<CesiumGeoreference>();
-        if (georeference == null && createGeoreferenceIfMissing)
-        {
-            var georeferenceObject = new GameObject("CesiumGeoreference");
-            georeference = georeferenceObject.AddComponent<CesiumGeoreference>();
-        }
-
-        return georeference;
-    }
-
-    private void PlaceModelAtCoordinates(
+    private static void ApplyLocalMapTransform(
         GameObject modelRoot,
-        CesiumGeoreference targetGeoreference,
-        double longitude,
-        double latitude,
-        double elevation,
         IReadOnlyDictionary<string, string> properties)
     {
         var modelTransform = modelRoot.transform;
@@ -395,31 +592,12 @@ public sealed class IfcGeoPositionExtractor : MonoBehaviour
         var mapYawDegrees = 0d;
         TryReadMapTransform(properties, out mapScale, out mapYawDegrees);
 
-        if (!modelTransform.IsChildOf(targetGeoreference.transform))
-        {
-            var modelScale = modelTransform.localScale;
-            modelTransform.SetParent(targetGeoreference.transform, false);
-            modelTransform.localPosition = Vector3.zero;
-            modelTransform.localScale = modelScale * (float)mapScale;
-        }
-
+        modelTransform.localPosition = Vector3.zero;
+        modelTransform.localScale *= (float)mapScale;
         modelTransform.localRotation = Quaternion.Euler(
             0f,
             (float)-mapYawDegrees,
             0f);
-
-        if (!attachGlobeAnchor)
-        {
-            return;
-        }
-
-        var anchor = modelRoot.GetComponent<CesiumGlobeAnchor>();
-        if (anchor == null)
-        {
-            anchor = modelRoot.AddComponent<CesiumGlobeAnchor>();
-        }
-
-        anchor.longitudeLatitudeHeight = new double3(longitude, latitude, elevation);
     }
 
     private bool TryFindGeoMetadata(
