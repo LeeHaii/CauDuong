@@ -145,6 +145,42 @@ public sealed class ArcGisMapLoader : MonoBehaviour
         return true;
     }
 
+    public Transform CreateGeographicAnchor(
+        string anchorName,
+        double latitude,
+        double longitude,
+        double elevation)
+    {
+        if (!double.IsFinite(latitude) ||
+            !double.IsFinite(longitude) ||
+            !double.IsFinite(elevation) ||
+            latitude is < -90d or > 90d ||
+            longitude is < -180d or > 180d)
+        {
+            return null;
+        }
+
+        EnsureMapInfrastructure(longitude, latitude, elevation);
+        if (mapComponent == null)
+        {
+            return null;
+        }
+
+        var anchor = new GameObject(string.IsNullOrWhiteSpace(anchorName)
+            ? "ArcGIS Geographic Anchor"
+            : anchorName);
+        anchor.transform.SetParent(mapComponent.transform, false);
+        var location = anchor.AddComponent<ArcGISLocationComponent>();
+        location.SurfacePlacementMode = ArcGISSurfacePlacementMode.AbsoluteHeight;
+        location.Position = new ArcGISPoint(
+            longitude,
+            latitude,
+            elevation,
+            ArcGISSpatialReference.WGS84());
+        location.Rotation = new ArcGISRotation(0d, 0d, 0d);
+        return anchor.transform;
+    }
+
     public void LoadMap(
         GameObject modelRoot,
         double latitude,

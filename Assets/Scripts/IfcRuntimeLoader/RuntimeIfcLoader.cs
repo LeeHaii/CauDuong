@@ -38,17 +38,40 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
 
     public void BrowseIFC()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-        var paths = WindowsFileDialog.OpenIfcFiles();
-#else
-        SetStatus("Runtime IFC import is currently supported on Windows only.");
-        return;
-#endif
+        var paths = SelectIfcFiles();
 
         foreach (var path in paths)
         {
             LoadIFC(path);
         }
+    }
+
+    public IReadOnlyList<string> SelectIfcFiles()
+    {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        return WindowsFileDialog.OpenFiles(
+            "IFC files (*.ifc)\0*.ifc\0All files (*.*)\0*.*\0",
+            "Chọn mô hình IFC",
+            true);
+#else
+        SetStatus("Runtime IFC import is currently supported on Windows only.");
+        return Array.Empty<string>();
+#endif
+    }
+
+    public string SelectImageFile()
+    {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        var paths = WindowsFileDialog.OpenFiles(
+            "Image files (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0" +
+            "All files (*.*)\0*.*\0",
+            "Chọn ảnh hiện trường",
+            false);
+        return paths.Count > 0 ? paths[0] : string.Empty;
+#else
+        SetStatus("Image selection is currently supported on Windows only.");
+        return string.Empty;
+#endif
     }
 
     public void LoadIFC(string path)
@@ -90,12 +113,14 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetOpenFileName(ref OpenFileNameData data);
 
-        public static IReadOnlyList<string> OpenIfcFiles()
+        public static IReadOnlyList<string> OpenFiles(
+            string filterText,
+            string titleText,
+            bool allowMultiSelect)
         {
             var fileBuffer = Marshal.AllocHGlobal(MaxPathCharacters * sizeof(char));
-            var filter = Marshal.StringToHGlobalUni(
-                "IFC files (*.ifc)\0*.ifc\0All files (*.*)\0*.*\0");
-            var title = Marshal.StringToHGlobalUni("Open IFC Model");
+            var filter = Marshal.StringToHGlobalUni(filterText);
+            var title = Marshal.StringToHGlobalUni(titleText);
 
             try
             {
@@ -113,7 +138,7 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
                             PathMustExist |
                             ExplorerStyle |
                             DoNotChangeDirectory |
-                            AllowMultiSelect
+                            (allowMultiSelect ? AllowMultiSelect : 0)
                 };
 
                 if (!GetOpenFileName(ref data))

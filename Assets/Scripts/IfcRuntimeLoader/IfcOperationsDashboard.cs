@@ -13,7 +13,7 @@ using UnityEngine.UIElements;
 
 [DisallowMultipleComponent]
 [RequireComponent(typeof(UIDocument))]
-public sealed class IfcOperationsDashboard : MonoBehaviour
+public sealed partial class IfcOperationsDashboard : MonoBehaviour
 {
     private const string ProjectName = "Tuyến Đường Vành Đai 3 - TP. Hà Nội";
     private const float ClickTolerancePixels = 8f;
@@ -152,6 +152,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         if (uiBound && !HasBoundUi())
         {
             uiBound = false;
+            moduleUiBound = false;
             statusButtons.Clear();
             assetRows.Clear();
         }
@@ -182,13 +183,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         }
         else if (loadDefaultModelsOnStart)
         {
-            startupLoadRoutine = StartCoroutine(LoadDefaultModels());
+            startupLoadRoutine = StartCoroutine(LoadRegisteredModels());
         }
     }
 
     private void OnDisable()
     {
         SetSelectionHighlight(selectedRecord, false);
+        ReleaseModuleResources();
         UnsubscribeFromLoader();
         UnsubscribeFromMeasurement();
     }
@@ -341,7 +343,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         customPropertyValueInput = root.Q<TextField>("custom-property-value");
         customPropertySaveButton = root.Q<Button>("save-custom-property-button");
 
-        root.Q<Button>("browse-ifc-button").clicked += BrowseIfc;
+        BindModuleUi();
         root.Q<Button>("layer-button").clicked += ToggleModelManager;
         root.Q<Button>("frame-model-button").clicked += FrameModel;
         root.Q<Button>("measure-button").clicked += ToggleMeasurementPopup;
@@ -487,6 +489,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         if (loader == null || loader.LoadedModels.Count == 0)
         {
             RefreshDashboard();
+            RefreshModuleData();
+            BuildInspectionMarkers();
             return;
         }
 
@@ -558,6 +562,8 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         ApplyCategoryVisibility();
         RefreshDashboard();
         BuildModelList();
+        RefreshModuleData();
+        BuildInspectionMarkers();
     }
 
     private static List<Renderer> CollectOwnedRenderers(Transform owner)
@@ -630,6 +636,15 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         var localCenter = modelRoot.InverseTransformPoint(bounds.center);
         var vn2000X = (context.OriginX + localCenter.x) * context.MetresPerUnit;
         var vn2000Y = (context.OriginY + localCenter.z) * context.MetresPerUnit;
+        var elevation =
+            (context.OriginElevation + localCenter.y) * context.MetresPerUnit;
+        Vn2000CoordinateConverter.TryConvertToWgs84(
+            vn2000X,
+            vn2000Y,
+            105d,
+            0.9999d,
+            out var latitude,
+            out var longitude);
 
         return new IfcAssetRecord
         {
@@ -649,7 +664,10 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
             NormalCount = normalCount,
             IndexCount = indexCount,
             Vn2000X = vn2000X,
-            Vn2000Y = vn2000Y
+            Vn2000Y = vn2000Y,
+            Latitude = latitude,
+            Longitude = longitude,
+            Elevation = elevation
         };
     }
 
@@ -718,6 +736,14 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
                     NumberStyles.Float,
                     CultureInfo.InvariantCulture,
                     out context.OriginY);
+                if (values.Length >= 3)
+                {
+                    double.TryParse(
+                        values[2].Trim(),
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out context.OriginElevation);
+                }
             }
         }
 
@@ -1555,6 +1581,10 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         modelManagerPopup.style.display = DisplayStyle.None;
         measurementPopup.style.display = DisplayStyle.None;
         exportPopup.style.display = DisplayStyle.None;
+        if (inspectionPopup != null)
+        {
+            inspectionPopup.style.display = DisplayStyle.None;
+        }
     }
 
     private void ClearModels()
@@ -2046,6 +2076,7 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         ResolveDependencies();
         if (Mouse.current == null ||
             records.Count == 0 ||
+            !IsReportModuleActive ||
             measurementController?.ActiveMode != IfcMeasurementMode.None)
         {
             pendingSceneClick = false;
@@ -2083,6 +2114,11 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         if (IsPointerOverDashboard(pointerPosition))
         {
             return false;
+        }
+
+        if (TrySelectInspectionMarker(pointerPosition))
+        {
+            return true;
         }
 
         if (!IfcInteractionRaycaster.TryRaycast(
@@ -2518,6 +2554,9 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         public long IndexCount;
         public double Vn2000X;
         public double Vn2000Y;
+        public double Latitude;
+        public double Longitude;
+        public double Elevation;
         public readonly Dictionary<string, string> CustomProperties =
             new(StringComparer.CurrentCultureIgnoreCase);
         public bool CustomPropertiesLoaded;
@@ -2534,5 +2573,6 @@ public sealed class IfcOperationsDashboard : MonoBehaviour
         public double MetresPerUnit;
         public double OriginX;
         public double OriginY;
+        public double OriginElevation;
     }
 }

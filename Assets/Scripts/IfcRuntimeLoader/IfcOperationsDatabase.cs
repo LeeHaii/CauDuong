@@ -6,7 +6,7 @@ using CauDuong.IfcOperations;
 using UnityEngine;
 
 [DisallowMultipleComponent]
-public sealed class IfcOperationsDatabase : MonoBehaviour
+public sealed partial class IfcOperationsDatabase : MonoBehaviour
 {
     private const int SqliteOk = 0;
     private const int SqliteRow = 100;
@@ -371,6 +371,7 @@ public sealed class IfcOperationsDatabase : MonoBehaviour
                 "property_value TEXT NOT NULL, is_deleted INTEGER NOT NULL, " +
                 "updated_at TEXT NOT NULL, " +
                 "PRIMARY KEY (source_file, element_key, property_key));");
+            EnsureModuleSchema();
         }
         catch (Exception exception)
         {
