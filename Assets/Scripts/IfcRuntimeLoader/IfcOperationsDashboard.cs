@@ -1027,6 +1027,8 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
                     () => DeleteCustomProperty(property.Key));
             }
         }
+
+        BuildElementInspectionHistory(record);
     }
 
     private void AddBuiltInPropertyRow(
