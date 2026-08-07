@@ -59,6 +59,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
     private VisualElement statusStrip;
     private VisualElement loadingOverlay;
     private VisualElement loadingSpinner;
+    private VisualElement loadingProgressFill;
     private VisualElement measurementHud;
     private VisualElement customPropertyOverlay;
     private VisualElement analyticsOverlay;
@@ -72,6 +73,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
     private Button measureButton;
     private Label importStatusLabel;
     private Label loadingMessage;
+    private Label loadingDetail;
     private Label measurementHudTitle;
     private Label measurementHudValue;
     private Label detailTypeLabel;
@@ -177,13 +179,16 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         ResolveDependencies();
         BindUi();
 
-        if (loader != null && loader.LoadedModels.Count > 0)
+        if (loadDefaultModelsOnStart)
+        {
+            startupLoading = true;
+            SetLoadingVisible(true);
+            SetLoadingProgress(0.02f, "Đang khởi tạo kho dữ liệu BIM-GIS...");
+            startupLoadRoutine = StartCoroutine(LoadRegisteredModels());
+        }
+        else if (loader != null && loader.LoadedModels.Count > 0)
         {
             RebuildModelIndex();
-        }
-        else if (loadDefaultModelsOnStart)
-        {
-            startupLoadRoutine = StartCoroutine(LoadRegisteredModels());
         }
     }
 
@@ -307,6 +312,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         statusStrip = root.Q<VisualElement>("status-strip");
         loadingOverlay = root.Q<VisualElement>("loading-overlay");
         loadingSpinner = root.Q<VisualElement>("loading-spinner");
+        loadingProgressFill = root.Q<VisualElement>("loading-progress-fill");
         measurementHud = root.Q<VisualElement>("measurement-hud");
         customPropertyOverlay = root.Q<VisualElement>("custom-property-overlay");
         analyticsOverlay = root.Q<VisualElement>("analytics-overlay");
@@ -320,6 +326,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         measureButton = root.Q<Button>("measure-button");
         importStatusLabel = root.Q<Label>("import-status");
         loadingMessage = root.Q<Label>("loading-message");
+        loadingDetail = root.Q<Label>("loading-detail");
         measurementHudTitle = root.Q<Label>("measurement-hud-title");
         measurementHudValue = root.Q<Label>("measurement-hud-value");
         detailTypeLabel = root.Q<Label>("detail-ifc-type");
@@ -447,11 +454,13 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
 
     private void HandleLoadCompleted(GameObject modelRoot)
     {
-        RebuildModelIndex();
-        if (!startupLoading)
+        if (startupLoading)
         {
-            FrameModel(modelRoot);
+            return;
         }
+
+        RebuildModelIndex();
+        FrameModel(modelRoot);
     }
 
     private void HandleLoaderStatus(string message)
@@ -472,6 +481,11 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
 
     private void HandleModelsChanged()
     {
+        if (startupLoading)
+        {
+            return;
+        }
+
         RebuildModelIndex();
         BuildModelList();
     }
@@ -571,6 +585,43 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         var result = new List<Renderer>();
         CollectOwnedRenderersRecursive(owner, owner, result);
         return result;
+    }
+
+    private static Bounds RefreshLiveBounds(IfcAssetRecord record)
+    {
+        if (record == null || record.Renderers == null)
+        {
+            return default;
+        }
+
+        var found = false;
+        var bounds = record.Bounds;
+        foreach (var renderer in record.Renderers)
+        {
+            if (renderer == null)
+            {
+                continue;
+            }
+
+            if (!found)
+            {
+                bounds = renderer.bounds;
+                found = true;
+            }
+            else
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+        }
+
+        if (found)
+        {
+            // Renderer.bounds is world-space and follows ArcGIS anchor updates.
+            // Keep the cached value fresh for details, exports, and marker code.
+            record.Bounds = bounds;
+        }
+
+        return bounds;
     }
 
     private static void CollectOwnedRenderersRecursive(
@@ -947,6 +998,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         }
 
         selectedRecord = record;
+        RefreshLiveBounds(record);
         SetSelectionHighlight(record, true);
         expandedCategories.Add(record.State.Category);
         if (!MatchesStatusFilter(record))
@@ -967,7 +1019,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
 
         if (focusSelection && frameSelection)
         {
-            FrameBounds(record.Bounds);
+            FrameBounds(RefreshLiveBounds(record));
         }
     }
 
@@ -1046,9 +1098,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             : sourceValue;
         AddPropertyRow(
             key,
-            displayedValue,
-            () => OpenEditBuiltInProperty(key, displayedValue),
-            () => DeleteBuiltInProperty(key));
+            displayedValue);
     }
 
     private void EnsureElementPropertiesLoaded(IfcAssetRecord record)
@@ -1629,6 +1679,33 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         {
             loadingOverlay.style.display =
                 visible ? DisplayStyle.Flex : DisplayStyle.None;
+            if (visible)
+            {
+                loadingOverlay.BringToFront();
+                loadingOverlay.Focus();
+            }
+        }
+    }
+
+    private void SetLoadingProgress(float progress, string message)
+    {
+        if (loadingProgressFill != null)
+        {
+            loadingProgressFill.style.width = new Length(
+                Mathf.Clamp01(progress) * 100f,
+                LengthUnit.Percent);
+        }
+
+        if (loadingMessage != null && !string.IsNullOrWhiteSpace(message))
+        {
+            loadingMessage.text = message;
+        }
+
+        if (loadingDetail != null)
+        {
+            loadingDetail.text =
+                $"{Mathf.RoundToInt(Mathf.Clamp01(progress) * 100f)}% • " +
+                "Không đóng ứng dụng trong quá trình chuẩn bị dữ liệu";
         }
     }
 
@@ -1637,6 +1714,12 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         if (!startupLoading || loadingSpinner == null)
         {
             return;
+        }
+
+        if (loadingOverlay != null &&
+            loadingOverlay.style.display.value != DisplayStyle.Flex)
+        {
+            SetLoadingVisible(true);
         }
 
         spinnerAngle = (spinnerAngle - Time.unscaledDeltaTime * 260f) % 360f;
@@ -1650,10 +1733,10 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
-        var bounds = records[0].Bounds;
+        var bounds = RefreshLiveBounds(records[0]);
         for (var index = 1; index < records.Count; index++)
         {
-            bounds.Encapsulate(records[index].Bounds);
+            bounds.Encapsulate(RefreshLiveBounds(records[index]));
         }
 
         FrameBounds(bounds);
@@ -1677,10 +1760,10 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
-        var bounds = modelRecords[0].Bounds;
+        var bounds = RefreshLiveBounds(modelRecords[0]);
         for (var index = 1; index < modelRecords.Length; index++)
         {
-            bounds.Encapsulate(modelRecords[index].Bounds);
+            bounds.Encapsulate(RefreshLiveBounds(modelRecords[index]));
         }
 
         modelRoot.GetComponent<IfcModelLodController>()?.Reveal(
@@ -2078,6 +2161,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         ResolveDependencies();
         if (Mouse.current == null ||
             records.Count == 0 ||
+            startupLoading ||
             !IsReportModuleActive ||
             measurementController?.ActiveMode != IfcMeasurementMode.None)
         {
@@ -2250,8 +2334,13 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
     private void HandleGeometryChanged(GeometryChangedEvent change)
     {
         var width = change.newRect.width;
+        var height = change.newRect.height;
         root.EnableInClassList("dashboard-compact", width < 1450f);
         root.EnableInClassList("dashboard-narrow", width < 1000f);
+        root.EnableInClassList(
+            "dashboard-roomy",
+            width >= 1600f && height >= 850f);
+        root.EnableInClassList("dashboard-short", height < 760f);
     }
 
     private void SetImportStatus(string message)

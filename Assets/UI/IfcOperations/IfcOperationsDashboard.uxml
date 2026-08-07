@@ -135,7 +135,7 @@
                 <ui:VisualElement class="field-history-panel">
                     <ui:VisualElement class="field-panel-heading-row">
                         <ui:Label text="Bảng Ghi Nhận Hiện Trường" class="field-panel-title"/>
-                        <ui:Label text="Nhấp MỞ để chuyển tới vị trí trên bản đồ" class="field-panel-meta"/>
+                        <ui:Label text="Danh sách ghi nhận đã đồng bộ từ hiện trường" class="field-panel-meta"/>
                     </ui:VisualElement>
                     <ui:VisualElement class="field-table-header">
                         <ui:Label text="STT" class="field-table-cell field-table-index"/>
@@ -145,7 +145,6 @@
                         <ui:Label text="Cấu kiện IFC" class="field-table-cell field-table-element"/>
                         <ui:Label text="Thời gian" class="field-table-cell field-table-time"/>
                         <ui:Label text="Tọa độ" class="field-table-cell field-table-coordinate"/>
-                        <ui:Label text="" class="field-table-cell field-table-action"/>
                     </ui:VisualElement>
                     <ui:ScrollView name="field-history-scroll" mode="Vertical" class="field-history-scroll">
                         <ui:VisualElement name="field-history-list" class="field-history-list"/>
@@ -273,7 +272,6 @@
                                 <ui:Label text="Lịch Sử Kiểm Tra Kỹ Thuật" class="element-inspection-title"/>
                                 <ui:Label text="Các sự cố và lần kiểm tra gắn trực tiếp với cấu kiện" class="element-inspection-subtitle"/>
                             </ui:VisualElement>
-                            <ui:Button name="add-element-inspection-button" text="+ Thêm" class="add-property-button"/>
                         </ui:VisualElement>
                         <ui:VisualElement class="element-inspection-summary">
                             <ui:VisualElement class="element-inspection-kpi">
@@ -403,8 +401,16 @@
                 <ui:Label name="measurement-hud-value" text="Chọn điểm trên mô hình IFC." class="measurement-hud-value"/>
             </ui:VisualElement>
             <ui:VisualElement name="loading-overlay" class="loading-overlay hud-interactive">
-                <ui:VisualElement name="loading-spinner" class="loading-spinner"/>
-                <ui:Label name="loading-message" text="Đang nạp dữ liệu IFC..." class="loading-message"/>
+                <ui:VisualElement class="loading-surface">
+                    <ui:Label text="BIM-GIS INFRAOPS" class="loading-brand"/>
+                    <ui:Label text="QUẢN LÝ BÁO CÁO HẠ TẦNG" class="loading-title"/>
+                    <ui:VisualElement name="loading-spinner" class="loading-spinner"/>
+                    <ui:Label name="loading-message" text="Đang chuẩn bị dữ liệu hệ thống..." class="loading-message"/>
+                    <ui:VisualElement class="loading-progress-track">
+                        <ui:VisualElement name="loading-progress-fill" class="loading-progress-fill"/>
+                    </ui:VisualElement>
+                    <ui:Label name="loading-detail" text="Vui lòng chờ đến khi dữ liệu sẵn sàng" class="loading-detail"/>
+                </ui:VisualElement>
             </ui:VisualElement>
         </ui:VisualElement>
     </ui:VisualElement>

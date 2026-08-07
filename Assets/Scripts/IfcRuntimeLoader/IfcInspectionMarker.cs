@@ -11,13 +11,24 @@ public sealed class IfcInspectionMarker : MonoBehaviour
 
     private Camera viewingCamera;
     private Transform callout;
+    private float nextSurfaceProbeTime;
 
     public long InspectionId { get; private set; }
+    public IfcElementMetadata LinkedElement { get; private set; }
+
+    public void AssignLinkedElement(IfcElementMetadata metadata)
+    {
+        if (metadata != null)
+        {
+            LinkedElement = metadata;
+        }
+    }
 
     public static IfcInspectionMarker Create(
         Transform parent,
         Vector3 worldPosition,
         long inspectionId,
+        IfcElementMetadata linkedElement,
         Camera camera,
         string title,
         bool isResolved)
@@ -74,6 +85,7 @@ public sealed class IfcInspectionMarker : MonoBehaviour
 
         var marker = markerObject.AddComponent<IfcInspectionMarker>();
         marker.InspectionId = inspectionId;
+        marker.LinkedElement = linkedElement;
         marker.viewingCamera = camera;
         marker.callout = calloutRoot.transform;
         return marker;
@@ -88,7 +100,8 @@ public sealed class IfcInspectionMarker : MonoBehaviour
         }
 
         var desiredWorldScale = Mathf.Clamp(
-            Vector3.Distance(viewingCamera.transform.position, transform.position) * 0.018f,
+            Vector3.Distance(viewingCamera.transform.position, transform.position) *
+            0.018f * GetScreenScaleCompensation(viewingCamera),
             0.9f,
             12f);
         var parentScale = transform.parent != null
@@ -109,6 +122,46 @@ public sealed class IfcInspectionMarker : MonoBehaviour
                     viewingCamera.transform.up);
             }
         }
+
+        if (LinkedElement == null && Time.unscaledTime >= nextSurfaceProbeTime)
+        {
+            nextSurfaceProbeTime = Time.unscaledTime + 1f;
+            TryLinkSurfaceBelow();
+        }
+    }
+
+    private void TryLinkSurfaceBelow()
+    {
+        var origin = transform.position + Vector3.up * 250f;
+        var hits = Physics.RaycastAll(
+            origin,
+            Vector3.down,
+            500f,
+            ~0,
+            QueryTriggerInteraction.Ignore);
+        System.Array.Sort(hits, (left, right) => left.distance.CompareTo(right.distance));
+        foreach (var hit in hits)
+        {
+            if (hit.collider == null || hit.collider.transform.IsChildOf(transform))
+            {
+                continue;
+            }
+
+            var metadata = hit.collider.GetComponentInParent<IfcElementMetadata>();
+            if (metadata == null)
+            {
+                continue;
+            }
+
+            LinkedElement = metadata;
+            return;
+        }
+    }
+
+    private static float GetScreenScaleCompensation(Camera camera)
+    {
+        var pixelHeight = camera.pixelHeight > 0 ? camera.pixelHeight : Screen.height;
+        return Mathf.Clamp(1080f / Mathf.Max(480f, pixelHeight), 0.85f, 1.6f);
     }
 
     private static string Truncate(string value, int maxLength)

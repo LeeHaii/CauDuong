@@ -16,6 +16,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
     private const uint MeshFileMagic = 0x4D494258;
     private const int RawMeshFileVersion = 2;
     private const int OptimizedMeshFileVersion = 3;
+    private const int BinaryItemsPerYield = 16_384;
     private const int OptimizationRevision = 2;
     private const int MaxRecordCount = 10_000_000;
     private const int MaxStringLength = 1_000_000;
@@ -25,9 +26,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [Header("Generated Model")]
     [SerializeField] private Transform modelParent;
     [SerializeField] private Material defaultMaterial;
+    [Tooltip("Render both front and back faces. Disable to use normal back-face culling for higher fill-rate performance.")]
+    [SerializeField] private bool renderDoubleSided = true;
     [SerializeField] private bool generateMeshColliders;
-    [Tooltip("Combines IFC renderers that share a material while preserving their individual GameObjects and colliders.")]
-    [SerializeField] private bool enableRuntimeStaticBatching = true;
+    [Tooltip("Larger meshes use a bounds collider to avoid long synchronous MeshCollider cooking stalls.")]
+    [SerializeField, Min(1_000)] private int maximumMeshColliderTriangles = 10_000;
+    [Tooltip("Combines IFC renderers at runtime. Keep disabled for large models because Unity performs each model combine synchronously on the main thread.")]
+    [SerializeField] private bool enableRuntimeStaticBatching;
     [Tooltip("Allows ArcGIS high-precision transforms to settle before building the final static batches.")]
     [SerializeField, Min(MinimumStaticBatchSettleSeconds)]
     private float staticBatchSettleSeconds = MinimumStaticBatchSettleSeconds;
@@ -51,6 +56,8 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [SerializeField, Range(0.02f, 1f)] private float broadSurfaceMeshQuality = 0.55f;
     [Tooltip("Boundary-preserving QEM is slower on first import but does not weld unrelated IFC patches.")]
     [SerializeField] private bool useQuadricSimplification = true;
+    [Tooltip("Allows QEM during Play Mode. Leave disabled for interactive loading because one large mesh can block Unity's main thread for many seconds.")]
+    [SerializeField] private bool allowBlockingRuntimeSimplification;
     [SerializeField] private bool preserveBoundaryEdges = true;
 
     [Header("Mesh Memory")]
@@ -104,6 +111,25 @@ public sealed class XbimIfcLoader : MonoBehaviour
         set => angularDeflectionDegrees = Mathf.Clamp(value, 1f, 90f);
     }
 
+    public bool RenderDoubleSided
+    {
+        get => renderDoubleSided;
+        set
+        {
+            if (renderDoubleSided == value)
+            {
+                return;
+            }
+
+            renderDoubleSided = value;
+            ApplyFaceCullingToLoadedMaterials();
+        }
+    }
+
+    private bool UseQuadricSimplificationForCurrentLoad =>
+        useQuadricSimplification &&
+        (!Application.isPlaying || allowBlockingRuntimeSimplification);
+
     public event Action<string> StatusChanged;
     public event Action<GameObject> LoadCompleted;
     public event Action<string> LoadFailed;
@@ -128,6 +154,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
             MinimumStaticBatchSettleSeconds,
             staticBatchSettleSeconds);
         RecoverLoadedModelsAfterDomainReload();
+        ApplyFaceCullingToLoadedMaterials();
     }
 
     private void LateUpdate()
@@ -378,7 +405,23 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         var lodController = loadedModel.GetComponent<IfcModelLodController>() ??
                             loadedModel.AddComponent<IfcModelLodController>();
-        lodController.Rebuild();
+        SetStatus("Building distance proxy geometry...");
+        var proxyRoutine = lodController.RebuildIncrementally();
+        while (proxyRoutine.MoveNext())
+        {
+            yield return proxyRoutine.Current;
+        }
+
+        if (releaseCpuMeshData)
+        {
+            SetStatus("Releasing source mesh memory...");
+            var releaseRoutine = ReleaseMeshCpuDataIncrementally(loadedModel);
+            while (releaseRoutine.MoveNext())
+            {
+                yield return releaseRoutine.Current;
+            }
+        }
+
         loadedModels.Add(loadedModel);
         modelSourcePaths[loadedModel] = path;
         importingModel = null;
@@ -401,6 +444,25 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
     }
 
+    private static IEnumerator ReleaseMeshCpuDataIncrementally(GameObject modelRoot)
+    {
+        var meshFilters = modelRoot.GetComponentsInChildren<MeshFilter>(true);
+        for (var index = 0; index < meshFilters.Length; index++)
+        {
+            var meshFilter = meshFilters[index];
+            var mesh = meshFilter.sharedMesh;
+            if (mesh != null && mesh.isReadable)
+            {
+                mesh.UploadMeshData(true);
+            }
+
+            if ((index + 1) % 128 == 0)
+            {
+                yield return null;
+            }
+        }
+    }
+
     private void ScheduleStaticBatching()
     {
         if (!enableRuntimeStaticBatching)
@@ -413,7 +475,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         IsLoading = true;
     }
 
-    private void BuildStaticBatches()
+    private IEnumerator BuildStaticBatchesIncrementally()
     {
         foreach (var model in loadedModels)
         {
@@ -437,6 +499,8 @@ public sealed class XbimIfcLoader : MonoBehaviour
             {
                 StaticBatchingUtility.Combine(model);
             }
+
+            yield return null;
         }
     }
 
@@ -451,7 +515,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
             yield break;
         }
 
-        BuildStaticBatches();
+        var batchingRoutine = BuildStaticBatchesIncrementally();
+        while (batchingRoutine.MoveNext())
+        {
+            yield return batchingRoutine.Current;
+        }
+
         IsLoading = false;
         staticBatchFinalizeRoutine = null;
         ModelsChanged?.Invoke();
@@ -548,6 +617,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
 
         loadedModel = new GameObject(modelName);
+        loadedModel.AddComponent<IfcModelLodController>();
         importingModel = loadedModel;
         activeMaterialCache = new Dictionary<int, Material>();
         activeMaterialsByAppearance = new Dictionary<IfcMaterialAppearance, Material>();
@@ -583,7 +653,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
             new(
                 "Post-Tessellation Simplification",
                 simplifyMeshes
-                    ? useQuadricSimplification
+                    ? UseQuadricSimplificationForCurrentLoad
                         ? "Adaptive clustering + QEM"
                         : "Adaptive clustering"
                     : "Disabled")
@@ -608,6 +678,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 var y = reader.ReadSingle();
                 var z = reader.ReadSingle();
                 vertices[vertexIndex] = new Vector3(x, z, y);
+                if ((vertexIndex + 1) % BinaryItemsPerYield == 0)
+                {
+                    yield return null;
+                }
             }
 
             var normalCount = reader.ReadInt32();
@@ -619,6 +693,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 var y = reader.ReadSingle();
                 var z = reader.ReadSingle();
                 normals[normalIndex] = new Vector3(x, z, y).normalized;
+                if ((normalIndex + 1) % BinaryItemsPerYield == 0)
+                {
+                    yield return null;
+                }
             }
 
             var uvCount = reader.ReadInt32();
@@ -631,6 +709,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 if (uvs != null)
                 {
                     uvs[uvIndex] = new Vector2(x, y);
+                }
+
+                if ((uvIndex + 1) % BinaryItemsPerYield == 0)
+                {
+                    yield return null;
                 }
             }
 
@@ -646,6 +729,11 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 if (tangents != null)
                 {
                     tangents[tangentIndex] = new Vector4(x, z, y, -w);
+                }
+
+                if ((tangentIndex + 1) % BinaryItemsPerYield == 0)
+                {
+                    yield return null;
                 }
             }
 
@@ -680,12 +768,21 @@ public sealed class XbimIfcLoader : MonoBehaviour
                         throw new InvalidDataException(
                             $"Mesh '{objectName}' contains an out-of-range index.");
                     }
+
+                    if ((index + 1) % BinaryItemsPerYield == 0)
+                    {
+                        yield return null;
+                    }
                 }
 
                 for (var index = 0; index + 2 < indices.Length; index += 3)
                 {
                     (indices[index + 1], indices[index + 2]) =
                         (indices[index + 2], indices[index + 1]);
+                    if ((index + 3) % BinaryItemsPerYield < 3)
+                    {
+                        yield return null;
+                    }
                 }
 
                 subMeshes[subMeshIndex] = indices;
@@ -703,10 +800,18 @@ public sealed class XbimIfcLoader : MonoBehaviour
                     : IndexFormat.UInt16,
                 vertices = vertices
             };
+            if (vertexCount >= BinaryItemsPerYield)
+            {
+                yield return null;
+            }
 
             if (normalCount == vertexCount)
             {
                 mesh.normals = normals;
+                if (normalCount >= BinaryItemsPerYield)
+                {
+                    yield return null;
+                }
             }
 
             if (uvs != null && uvCount == vertexCount)
@@ -723,6 +828,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
             for (var subMeshIndex = 0; subMeshIndex < subMeshCount; subMeshIndex++)
             {
                 mesh.SetTriangles(subMeshes[subMeshIndex], subMeshIndex, false);
+                if (subMeshes[subMeshIndex].Length >= BinaryItemsPerYield)
+                {
+                    yield return null;
+                }
             }
 
             if (normalCount != vertexCount)
@@ -751,15 +860,20 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 mesh = SimplifyMesh(mesh, sourceTriangleCount);
             }
 
-            LastOptimizedTriangleCount += CountTriangles(mesh);
+            var optimizedTriangleCount = CountTriangles(mesh);
+            LastOptimizedTriangleCount += optimizedTriangleCount;
             if (optimizedWriter != null)
             {
-                WriteOptimizedMesh(
+                var writeRoutine = WriteOptimizedMeshIncrementally(
                     optimizedWriter,
                     objectName,
                     productLabel,
                     mesh,
                     styleLabels);
+                while (writeRoutine.MoveNext())
+                {
+                    yield return writeRoutine.Current;
+                }
             }
 
             var element = new GameObject(objectName);
@@ -772,16 +886,18 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
             if (generateMeshColliders)
             {
-                var meshCollider = element.AddComponent<MeshCollider>();
-                meshCollider.cookingOptions =
-                    MeshColliderCookingOptions.CookForFasterSimulation |
-                    MeshColliderCookingOptions.UseFastMidphase;
-                meshCollider.sharedMesh = mesh;
-            }
-
-            if (releaseCpuMeshData)
-            {
-                mesh.UploadMeshData(true);
+                if (optimizedTriangleCount <= maximumMeshColliderTriangles)
+                {
+                    var meshCollider = element.AddComponent<MeshCollider>();
+                    meshCollider.cookingOptions = MeshColliderCookingOptions.UseFastMidphase;
+                    meshCollider.sharedMesh = mesh;
+                }
+                else
+                {
+                    var boundsCollider = element.AddComponent<BoxCollider>();
+                    boundsCollider.center = mesh.bounds.center;
+                    boundsCollider.size = mesh.bounds.size;
+                }
             }
 
             if ((meshIndex + 1) % meshesPerFrame == 0 ||
@@ -816,7 +932,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         if (!simplifyMeshes ||
             sourceTriangleCount < minimumSimplificationTriangles)
         {
-            OptimizeMeshBuffers(sourceMesh);
+            OptimizeMeshBuffersWhenSafe(sourceMesh);
             return sourceMesh;
         }
 
@@ -831,9 +947,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
             quality = Mathf.Min(quality, broadSurfaceMeshQuality);
         }
 
-        if (!useQuadricSimplification)
+        if (!UseQuadricSimplificationForCurrentLoad)
         {
-            OptimizeMeshBuffers(sourceMesh);
+            OptimizeMeshBuffersWhenSafe(sourceMesh);
             return sourceMesh;
         }
 
@@ -877,7 +993,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 $"Could not simplify IFC mesh '{sourceMesh.name}': {exception.Message}");
         }
 
-        OptimizeMeshBuffers(resultMesh);
+        OptimizeMeshBuffersWhenSafe(resultMesh);
         if (resultMesh != sourceMesh)
         {
             Destroy(sourceMesh);
@@ -908,8 +1024,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
         return count;
     }
 
-    private static void OptimizeMeshBuffers(Mesh mesh)
+    private static void OptimizeMeshBuffersWhenSafe(Mesh mesh)
     {
+        if (Application.isPlaying)
+        {
+            return;
+        }
+
         mesh.OptimizeIndexBuffers();
         mesh.OptimizeReorderVertexBuffer();
     }
@@ -1071,10 +1192,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         SetColorIfPresent(material, "_IfcSpecColor", style.Specular);
         SetFloatIfPresent(material, "_Smoothness", style.Smoothness);
         SetFloatIfPresent(material, "_Glossiness", style.Smoothness);
-        SetFloatIfPresent(material, "_Cull", (float)CullMode.Off);
-        SetFloatIfPresent(material, "_CullMode", (float)CullMode.Off);
-        SetFloatIfPresent(material, "_CullModeForward", (float)CullMode.Off);
-        SetFloatIfPresent(material, "_DoubleSidedEnable", 1f);
+        ApplyFaceCulling(material);
 
         ConfigureTransparency(material, style.Diffuse.a);
         activeMaterialCache[style.Label] = material;
@@ -1086,6 +1204,31 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
 
         return material;
+    }
+
+    private void ApplyFaceCullingToLoadedMaterials()
+    {
+        foreach (var materials in modelMaterials.Values)
+        {
+            foreach (var material in materials)
+            {
+                ApplyFaceCulling(material);
+            }
+        }
+    }
+
+    private void ApplyFaceCulling(Material material)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        var cullMode = renderDoubleSided ? CullMode.Off : CullMode.Back;
+        SetFloatIfPresent(material, "_Cull", (float)cullMode);
+        SetFloatIfPresent(material, "_CullMode", (float)cullMode);
+        SetFloatIfPresent(material, "_CullModeForward", (float)cullMode);
+        SetFloatIfPresent(material, "_DoubleSidedEnable", renderDoubleSided ? 1f : 0f);
     }
 
     private static Shader GetIfcShader()
@@ -1396,7 +1539,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
             extremeSimplificationTriangles,
             extremeMeshQuality.ToString("R", CultureInfo.InvariantCulture),
             broadSurfaceMeshQuality.ToString("R", CultureInfo.InvariantCulture),
-            useQuadricSimplification,
+            UseQuadricSimplificationForCurrentLoad,
             preserveBoundaryEdges,
             importTextureCoordinates,
             importTangents,
@@ -1523,7 +1666,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
         writer.Write(meshCount);
     }
 
-    private static void WriteOptimizedMesh(
+    private static IEnumerator WriteOptimizedMeshIncrementally(
         BinaryWriter writer,
         string objectName,
         int productLabel,
@@ -1535,38 +1678,58 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         var vertices = mesh.vertices;
         writer.Write(vertices.Length);
-        foreach (var vertex in vertices)
+        for (var index = 0; index < vertices.Length; index++)
         {
+            var vertex = vertices[index];
             writer.Write(vertex.x);
             writer.Write(vertex.z);
             writer.Write(vertex.y);
+            if ((index + 1) % BinaryItemsPerYield == 0)
+            {
+                yield return null;
+            }
         }
 
         var normals = mesh.normals;
         writer.Write(normals.Length);
-        foreach (var normal in normals)
+        for (var index = 0; index < normals.Length; index++)
         {
+            var normal = normals[index];
             writer.Write(normal.x);
             writer.Write(normal.z);
             writer.Write(normal.y);
+            if ((index + 1) % BinaryItemsPerYield == 0)
+            {
+                yield return null;
+            }
         }
 
         var uvs = mesh.uv;
         writer.Write(uvs.Length);
-        foreach (var uv in uvs)
+        for (var index = 0; index < uvs.Length; index++)
         {
+            var uv = uvs[index];
             writer.Write(uv.x);
             writer.Write(uv.y);
+            if ((index + 1) % BinaryItemsPerYield == 0)
+            {
+                yield return null;
+            }
         }
 
         var tangents = mesh.tangents;
         writer.Write(tangents.Length);
-        foreach (var tangent in tangents)
+        for (var index = 0; index < tangents.Length; index++)
         {
+            var tangent = tangents[index];
             writer.Write(tangent.x);
             writer.Write(tangent.z);
             writer.Write(tangent.y);
             writer.Write(-tangent.w);
+            if ((index + 1) % BinaryItemsPerYield == 0)
+            {
+                yield return null;
+            }
         }
 
         writer.Write(mesh.subMeshCount);
@@ -1582,6 +1745,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
                 writer.Write(triangles[index]);
                 writer.Write(triangles[index + 2]);
                 writer.Write(triangles[index + 1]);
+                if ((index + 3) % BinaryItemsPerYield < 3)
+                {
+                    yield return null;
+                }
             }
         }
     }
@@ -1707,6 +1874,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         meshesPerFrame = Mathf.Max(1, meshesPerFrame);
         sourceTrianglesPerFrame = Mathf.Max(1_000, sourceTrianglesPerFrame);
         converterTimeoutSeconds = Mathf.Max(30f, converterTimeoutSeconds);
+        if (Application.isPlaying)
+        {
+            ApplyFaceCullingToLoadedMaterials();
+        }
     }
 
     private static string ReadSafeString(BinaryReader reader, string label)

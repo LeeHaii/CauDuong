@@ -27,7 +27,7 @@ Shader "CauDuong/IFC Double Sided"
         {
             Name "UniversalForward"
             Tags { "LightMode" = "UniversalForward" }
-            Cull Off
+            Cull [_Cull]
             Blend [_SrcBlend] [_DstBlend]
             ZWrite [_ZWrite]
 
@@ -82,7 +82,7 @@ Shader "CauDuong/IFC Double Sided"
         }
 
         LOD 300
-        Cull Off
+        Cull [_Cull]
         Blend [_SrcBlend] [_DstBlend]
         ZWrite [_ZWrite]
 
