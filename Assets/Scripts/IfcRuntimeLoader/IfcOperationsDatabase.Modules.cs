@@ -348,7 +348,7 @@ public sealed partial class IfcOperationsDatabase
         destination.Clear();
         const string sql =
             "SELECT id, project_name, source_file, element_key, element_name, " +
-            "latitude, longitude, elevation, image_path, note, created_at, " +
+            "element_type, created_by, latitude, longitude, elevation, image_path, note, created_at, " +
             "is_resolved, resolved_at " +
             "FROM field_inspections ORDER BY created_at DESC, id DESC;";
         var statement = Prepare(sql);
@@ -367,14 +367,16 @@ public sealed partial class IfcOperationsDatabase
                     ReadColumnText(statement, 2),
                     ReadColumnText(statement, 3),
                     ReadColumnText(statement, 4),
-                    sqlite3_column_double(statement, 5),
-                    sqlite3_column_double(statement, 6),
+                    ReadColumnText(statement, 5),
+                    ReadColumnText(statement, 6),
                     sqlite3_column_double(statement, 7),
-                    ReadColumnText(statement, 8),
-                    ReadColumnText(statement, 9),
+                    sqlite3_column_double(statement, 8),
+                    sqlite3_column_double(statement, 9),
                     ReadColumnText(statement, 10),
-                    sqlite3_column_int(statement, 11) != 0,
-                    ReadColumnText(statement, 12)));
+                    ReadColumnText(statement, 11),
+                    ReadColumnText(statement, 12),
+                    sqlite3_column_int(statement, 13) != 0,
+                    ReadColumnText(statement, 14)));
             }
 
             return true;
@@ -399,9 +401,9 @@ public sealed partial class IfcOperationsDatabase
 
         const string sql =
             "INSERT INTO field_inspections " +
-            "(project_name, source_file, element_key, element_name, latitude, " +
+            "(project_name, source_file, element_key, element_name, element_type, created_by, latitude, " +
             "longitude, elevation, image_path, note, created_at, is_resolved, resolved_at) " +
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12);";
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);";
         var statement = Prepare(sql);
         if (statement == IntPtr.Zero)
         {
@@ -414,16 +416,18 @@ public sealed partial class IfcOperationsDatabase
             BindText(statement, 2, record.SourceFile);
             BindText(statement, 3, record.ElementKey);
             BindText(statement, 4, record.ElementName);
-            sqlite3_bind_double(statement, 5, record.Latitude);
-            sqlite3_bind_double(statement, 6, record.Longitude);
-            sqlite3_bind_double(statement, 7, record.Elevation);
-            BindText(statement, 8, record.ImagePath);
-            BindText(statement, 9, record.Note);
-            BindText(statement, 10, string.IsNullOrWhiteSpace(record.CreatedAt)
+            BindText(statement, 5, record.ElementType);
+            BindText(statement, 6, record.CreatedBy);
+            sqlite3_bind_double(statement, 7, record.Latitude);
+            sqlite3_bind_double(statement, 8, record.Longitude);
+            sqlite3_bind_double(statement, 9, record.Elevation);
+            BindText(statement, 10, record.ImagePath);
+            BindText(statement, 11, record.Note);
+            BindText(statement, 12, string.IsNullOrWhiteSpace(record.CreatedAt)
                 ? DateTime.Now.ToString("o")
                 : record.CreatedAt);
-            sqlite3_bind_int(statement, 11, record.IsResolved ? 1 : 0);
-            BindText(statement, 12, record.IsResolved
+            sqlite3_bind_int(statement, 13, record.IsResolved ? 1 : 0);
+            BindText(statement, 14, record.IsResolved
                 ? string.IsNullOrWhiteSpace(record.ResolvedAt)
                     ? DateTime.Now.ToString("o")
                     : record.ResolvedAt
@@ -459,6 +463,55 @@ public sealed partial class IfcOperationsDatabase
         try
         {
             sqlite3_bind_int64(statement, 1, inspectionId);
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
+    public bool UpdateFieldInspection(FieldInspectionRecord record)
+    {
+        if (!IsAvailable || record.Id <= 0 ||
+            string.IsNullOrWhiteSpace(record.ElementName) ||
+            !double.IsFinite(record.Latitude) ||
+            !double.IsFinite(record.Longitude))
+        {
+            return false;
+        }
+
+        const string sql =
+            "UPDATE field_inspections SET project_name = ?1, source_file = ?2, " +
+            "element_key = ?3, element_name = ?4, element_type = ?5, created_by = ?6, " +
+            "latitude = ?7, longitude = ?8, elevation = ?9, image_path = ?10, note = ?11, " +
+            "is_resolved = ?12, resolved_at = ?13 WHERE id = ?14;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, record.ProjectName);
+            BindText(statement, 2, record.SourceFile);
+            BindText(statement, 3, record.ElementKey);
+            BindText(statement, 4, record.ElementName);
+            BindText(statement, 5, record.ElementType);
+            BindText(statement, 6, record.CreatedBy);
+            sqlite3_bind_double(statement, 7, record.Latitude);
+            sqlite3_bind_double(statement, 8, record.Longitude);
+            sqlite3_bind_double(statement, 9, record.Elevation);
+            BindText(statement, 10, record.ImagePath);
+            BindText(statement, 11, record.Note);
+            sqlite3_bind_int(statement, 12, record.IsResolved ? 1 : 0);
+            BindText(statement, 13, record.IsResolved
+                ? string.IsNullOrWhiteSpace(record.ResolvedAt)
+                    ? DateTime.Now.ToString("o")
+                    : record.ResolvedAt
+                : string.Empty);
+            sqlite3_bind_int64(statement, 14, record.Id);
             return sqlite3_step(statement) == SqliteDone;
         }
         finally
@@ -544,7 +597,8 @@ public sealed partial class IfcOperationsDatabase
             "CREATE TABLE IF NOT EXISTS field_inspections (" +
             "id INTEGER PRIMARY KEY AUTOINCREMENT, project_name TEXT NOT NULL, " +
             "source_file TEXT NOT NULL, element_key TEXT NOT NULL, " +
-            "element_name TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, " +
+            "element_name TEXT NOT NULL, element_type TEXT NOT NULL DEFAULT '', " +
+            "created_by TEXT NOT NULL DEFAULT '', latitude REAL NOT NULL, longitude REAL NOT NULL, " +
             "elevation REAL NOT NULL, image_path TEXT NOT NULL, note TEXT NOT NULL, " +
             "created_at TEXT NOT NULL, is_resolved INTEGER NOT NULL DEFAULT 0, " +
             "resolved_at TEXT NOT NULL DEFAULT '');");
@@ -560,6 +614,14 @@ public sealed partial class IfcOperationsDatabase
         EnsureColumn(
             "field_inspections",
             "resolved_at",
+            "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(
+            "field_inspections",
+            "element_type",
+            "TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(
+            "field_inspections",
+            "created_by",
             "TEXT NOT NULL DEFAULT ''");
         Execute(
             "CREATE INDEX IF NOT EXISTS idx_ifc_registry_filters ON " +
@@ -725,6 +787,8 @@ public readonly struct FieldInspectionRecord
     public string SourceFile { get; }
     public string ElementKey { get; }
     public string ElementName { get; }
+    public string ElementType { get; }
+    public string CreatedBy { get; }
     public double Latitude { get; }
     public double Longitude { get; }
     public double Elevation { get; }
@@ -740,6 +804,8 @@ public readonly struct FieldInspectionRecord
         string sourceFile,
         string elementKey,
         string elementName,
+        string elementType,
+        string createdBy,
         double latitude,
         double longitude,
         double elevation,
@@ -754,6 +820,8 @@ public readonly struct FieldInspectionRecord
         SourceFile = sourceFile ?? string.Empty;
         ElementKey = elementKey ?? string.Empty;
         ElementName = elementName ?? string.Empty;
+        ElementType = elementType ?? string.Empty;
+        CreatedBy = createdBy ?? string.Empty;
         Latitude = latitude;
         Longitude = longitude;
         Elevation = elevation;

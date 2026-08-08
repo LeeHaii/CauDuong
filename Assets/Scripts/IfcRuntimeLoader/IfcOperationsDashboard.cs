@@ -68,6 +68,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
     private VisualElement analyticsCategoryChart;
     private VisualElement analyticsCategoryLegend;
     private VisualElement analyticsSourceChart;
+    private VisualElement analyticsRecentInspections;
     private Label totalCountLabel;
     private Button layerCountButton;
     private Button measureButton;
@@ -321,6 +322,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         analyticsCategoryChart = root.Q<VisualElement>("analytics-category-chart");
         analyticsCategoryLegend = root.Q<VisualElement>("analytics-category-legend");
         analyticsSourceChart = root.Q<VisualElement>("analytics-source-chart");
+        analyticsRecentInspections = root.Q<VisualElement>("analytics-recent-inspections");
         totalCountLabel = root.Q<Label>("total-count");
         layerCountButton = root.Q<Button>("layer-button");
         measureButton = root.Q<Button>("measure-button");
@@ -1415,7 +1417,28 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         SetImportStatus(persisted
             ? $"Đã lưu vận hành cho {selectedRecord.Name} vào SQLite."
             : $"Đã cập nhật vận hành cho {selectedRecord.Name}; chưa thể ghi SQLite.");
+        UpdateInspectionMarkersForElement(selectedRecord);
         RefreshDashboard();
+    }
+
+    private void UpdateInspectionMarkersForElement(IfcAssetRecord record)
+    {
+        if (record?.Metadata == null || record.State == null)
+        {
+            return;
+        }
+
+        foreach (var marker in inspectionMarkers.Values)
+        {
+            if (marker == null || marker.LinkedElement != record.Metadata)
+            {
+                continue;
+            }
+
+            marker.SetElementStatus(
+                record.State.Status,
+                record.State.HasUserUpdate);
+        }
     }
 
     private static int ParseOperationsIndex(string operationsGlobalId)
@@ -1788,22 +1811,34 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
 
     private void OpenAnalyticsDashboard()
     {
-        if (records.Count == 0)
-        {
-            SetImportStatus("Chưa có dữ liệu IFC để mở dashboard báo cáo.");
-            return;
-        }
+        OpenAnalyticsDashboard(false);
+    }
 
+    private void OpenAnalyticsDashboard(bool standalone)
+    {
         HidePopups();
         PopulateAnalyticsDashboard();
+        analyticsOverlay.EnableInClassList("analytics-standalone", standalone);
+        var closeButton = root.Q<Button>("close-analytics-button");
+        closeButton.text = standalone ? "Trang Tổng" : "×";
+        closeButton.tooltip = standalone
+            ? "Quay lại trang tổng"
+            : "Đóng dashboard báo cáo";
         analyticsOverlay.style.display = DisplayStyle.Flex;
     }
 
     private void CloseAnalyticsDashboard()
     {
+        var returnToHome = activeModule == DashboardModule.Dashboard;
         if (analyticsOverlay != null)
         {
             analyticsOverlay.style.display = DisplayStyle.None;
+            analyticsOverlay.RemoveFromClassList("analytics-standalone");
+        }
+
+        if (returnToHome)
+        {
+            ShowModule(DashboardModule.Home);
         }
     }
 
@@ -1829,6 +1864,72 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         BuildStatusLegend(statusCounts);
         BuildCategoryStatusChart();
         BuildSourceDistributionChart();
+        BuildRecentInspectionDashboard();
+    }
+
+    private void BuildRecentInspectionDashboard()
+    {
+        if (analyticsRecentInspections == null)
+        {
+            return;
+        }
+
+        analyticsRecentInspections.Clear();
+        var recent = fieldInspections.Take(5).ToArray();
+        if (recent.Length == 0)
+        {
+            var empty = new Label("Chưa có báo cáo hiện trường để hiển thị.");
+            empty.AddToClassList("analytics-recent-empty");
+            analyticsRecentInspections.Add(empty);
+            return;
+        }
+
+        foreach (var inspection in recent)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("analytics-recent-row");
+
+            var icon = new Label(string.IsNullOrWhiteSpace(inspection.ImagePath) ? "BC" : "ẢNH");
+            icon.AddToClassList("analytics-recent-icon");
+            var copy = new VisualElement();
+            copy.AddToClassList("analytics-recent-copy");
+            var title = new Label(EmptyFallback(inspection.ElementName, "Ghi nhận hiện trường"));
+            title.AddToClassList("analytics-recent-title");
+            var meta = new Label(
+                $"{EmptyFallback(inspection.ElementType, "Cấu kiện IFC")}  •  " +
+                $"{FormatInspectionTime(inspection.CreatedAt)}  •  " +
+                $"{inspection.Latitude:F5}, {inspection.Longitude:F5}");
+            meta.AddToClassList("analytics-recent-row-meta");
+            copy.Add(title);
+            copy.Add(meta);
+
+            var actions = new VisualElement();
+            actions.AddToClassList("analytics-recent-actions");
+            var status = new Label(inspection.IsResolved ? "Đã xử lý" : "Chưa xử lý");
+            status.AddToClassList("analytics-recent-status");
+            status.AddToClassList(inspection.IsResolved
+                ? "analytics-recent-status-resolved"
+                : "analytics-recent-status-open");
+            var map = new Button(() => OpenInspectionInReport(inspection))
+            {
+                text = "Bản đồ"
+            };
+            map.AddToClassList("analytics-recent-button");
+            map.AddToClassList("analytics-recent-map");
+            var detail = new Button(() => OpenInspectionDetails(inspection))
+            {
+                text = "Chi tiết"
+            };
+            detail.AddToClassList("analytics-recent-button");
+            actions.Add(status);
+            actions.Add(map);
+            actions.Add(detail);
+
+            row.Add(icon);
+            row.Add(copy);
+            row.Add(actions);
+            analyticsRecentInspections.Add(row);
+        }
     }
 
     private void BuildStatusLegend(IReadOnlyList<int> statusCounts)
@@ -2018,7 +2119,10 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         }
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(true));
-        SetImportStatus($"Đã xuất báo cáo: {Path.GetFileName(path)}");
+        var resolvedInspectionCount = ResolveNewestInspectionsAfterReportExport();
+        SetImportStatus(resolvedInspectionCount > 0
+            ? $"Đã xuất báo cáo và hoàn tất {resolvedInspectionCount:N0} ghi nhận mới nhất: {Path.GetFileName(path)}"
+            : $"Đã xuất báo cáo: {Path.GetFileName(path)}");
         Debug.Log($"IFC operations report exported to {path}");
         HidePopups();
     }
@@ -2147,8 +2251,11 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
                 generatedAt,
                 loader?.LoadedModels.Count ?? 0,
                 BuildReportRows()));
+        var resolvedInspectionCount = ResolveNewestInspectionsAfterReportExport();
         var savedFileName = Path.GetFileName(path);
-        SetImportStatus($"Đã tạo báo cáo PDF: {savedFileName}");
+        SetImportStatus(resolvedInspectionCount > 0
+            ? $"Đã tạo PDF và hoàn tất {resolvedInspectionCount:N0} ghi nhận mới nhất: {savedFileName}"
+            : $"Đã tạo báo cáo PDF: {savedFileName}");
         if (analyticsGeneratedAt != null)
         {
             analyticsGeneratedAt.text = $"Đã xuất {savedFileName}";

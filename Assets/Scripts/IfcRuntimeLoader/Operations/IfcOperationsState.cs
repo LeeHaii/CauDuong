@@ -11,6 +11,16 @@ namespace CauDuong.IfcOperations
         Repairing
     }
 
+    public static class IfcInspectionCalloutPolicy
+    {
+        public static bool ShouldShowUnresolved(
+            IfcOperationalStatus status,
+            bool hasUserUpdate)
+        {
+            return status == IfcOperationalStatus.Operational || !hasUserUpdate;
+        }
+    }
+
     [DisallowMultipleComponent]
     public sealed class IfcOperationsState : MonoBehaviour
     {
@@ -26,6 +36,7 @@ namespace CauDuong.IfcOperations
         public string OperationsGlobalId => operationsGlobalId;
         public string MaintenanceNote => maintenanceNote;
         public string UpdatedAt => updatedAt;
+        public bool HasUserUpdate => !string.IsNullOrWhiteSpace(updatedAt);
 
         public void Initialize(
             IfcInfrastructureCategory infrastructureCategory,
