@@ -467,6 +467,41 @@ public sealed partial class IfcOperationsDatabase
         }
     }
 
+    public bool UpdateFieldInspectionLink(
+        long inspectionId,
+        string sourceFile,
+        string elementKey)
+    {
+        if (!IsAvailable ||
+            inspectionId <= 0 ||
+            string.IsNullOrWhiteSpace(sourceFile) ||
+            string.IsNullOrWhiteSpace(elementKey))
+        {
+            return false;
+        }
+
+        const string sql =
+            "UPDATE field_inspections SET source_file = ?1, element_key = ?2 " +
+            "WHERE id = ?3;";
+        var statement = Prepare(sql);
+        if (statement == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            BindText(statement, 1, sourceFile);
+            BindText(statement, 2, elementKey);
+            sqlite3_bind_int64(statement, 3, inspectionId);
+            return sqlite3_step(statement) == SqliteDone;
+        }
+        finally
+        {
+            sqlite3_finalize(statement);
+        }
+    }
+
     public bool SetFieldInspectionResolved(long inspectionId, bool resolved)
     {
         if (!IsAvailable || inspectionId <= 0)

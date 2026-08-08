@@ -4,6 +4,7 @@ using UnityEngine;
 public static class IfcInteractionRaycaster
 {
     private const float PointerTolerancePixels = 8f;
+    private const float RayTriangleEpsilon = 0.000001f;
 
     public static bool TryRaycast(
         Camera viewingCamera,
@@ -43,7 +44,7 @@ public static class IfcInteractionRaycaster
                 Physics.DefaultRaycastLayers,
                 QueryTriggerInteraction.Ignore);
 
-            if (TrySelectNearestIfc(hits, out selectedHit, out metadata))
+            if (TrySelectNearestIfc(ray, hits, out selectedHit, out metadata))
             {
                 return true;
             }
@@ -55,7 +56,7 @@ public static class IfcInteractionRaycaster
                 viewingCamera.farClipPlane,
                 Physics.DefaultRaycastLayers,
                 QueryTriggerInteraction.Ignore);
-            return TrySelectNearestIfc(hits, out selectedHit, out metadata);
+            return TrySelectNearestIfc(ray, hits, out selectedHit, out metadata);
         }
         finally
         {
@@ -64,6 +65,7 @@ public static class IfcInteractionRaycaster
     }
 
     private static bool TrySelectNearestIfc(
+        Ray ray,
         RaycastHit[] hits,
         out RaycastHit selectedHit,
         out IfcElementMetadata metadata)
@@ -72,6 +74,7 @@ public static class IfcInteractionRaycaster
         metadata = null;
         Array.Sort(hits, (left, right) => left.distance.CompareTo(right.distance));
 
+        var nearestDistance = float.PositiveInfinity;
         foreach (var hit in hits)
         {
             var candidate = hit.transform.GetComponentInParent<IfcElementMetadata>();
@@ -80,12 +83,149 @@ public static class IfcInteractionRaycaster
                 continue;
             }
 
+            if (hit.collider is MeshCollider)
+            {
+                if (hit.distance >= nearestDistance)
+                {
+                    continue;
+                }
+
+                selectedHit = hit;
+                metadata = candidate;
+                nearestDistance = hit.distance;
+                continue;
+            }
+
+            // Large IFC meshes retain a cheap BoxCollider for broad-phase lookup.
+            // A bounds hit is not a surface hit: roads, arches, and terrain can
+            // leave most of that box empty. Confirm it against the readable render
+            // mesh before allowing the element to be selected.
+            if (hit.collider is not BoxCollider ||
+                !TryRaycastReadableMesh(
+                    ray,
+                    hit.collider,
+                    out var surfacePoint,
+                    out var surfaceNormal,
+                    out var surfaceDistance) ||
+                surfaceDistance >= nearestDistance)
+            {
+                continue;
+            }
+
             selectedHit = hit;
+            selectedHit.point = surfacePoint;
+            selectedHit.normal = surfaceNormal;
+            selectedHit.distance = surfaceDistance;
             metadata = candidate;
-            return true;
+            nearestDistance = surfaceDistance;
         }
 
-        return false;
+        return metadata != null;
+    }
+
+    private static bool TryRaycastReadableMesh(
+        Ray worldRay,
+        Collider boundsCollider,
+        out Vector3 worldPoint,
+        out Vector3 worldNormal,
+        out float worldDistance)
+    {
+        worldPoint = default;
+        worldNormal = default;
+        worldDistance = float.PositiveInfinity;
+        if (!boundsCollider.TryGetComponent<MeshFilter>(out var meshFilter) ||
+            meshFilter.sharedMesh == null ||
+            !meshFilter.sharedMesh.isReadable)
+        {
+            return false;
+        }
+
+        var mesh = meshFilter.sharedMesh;
+        var meshTransform = meshFilter.transform;
+        var localOrigin = meshTransform.InverseTransformPoint(worldRay.origin);
+        var localDirection = meshTransform.InverseTransformDirection(worldRay.direction);
+        var vertices = mesh.vertices;
+        var triangles = mesh.triangles;
+        var found = false;
+        for (var index = 0; index + 2 < triangles.Length; index += 3)
+        {
+            if (!TryIntersectTriangle(
+                    localOrigin,
+                    localDirection,
+                    vertices[triangles[index]],
+                    vertices[triangles[index + 1]],
+                    vertices[triangles[index + 2]],
+                    out var localDistance,
+                    out var localNormal))
+            {
+                continue;
+            }
+
+            var candidatePoint = meshTransform.TransformPoint(
+                localOrigin + localDirection * localDistance);
+            var candidateDistance = Vector3.Distance(worldRay.origin, candidatePoint);
+            if (candidateDistance >= worldDistance)
+            {
+                continue;
+            }
+
+            worldPoint = candidatePoint;
+            worldNormal = meshTransform.TransformDirection(localNormal).normalized;
+            if (Vector3.Dot(worldNormal, worldRay.direction) > 0f)
+            {
+                worldNormal = -worldNormal;
+            }
+
+            worldDistance = candidateDistance;
+            found = true;
+        }
+
+        return found;
+    }
+
+    private static bool TryIntersectTriangle(
+        Vector3 rayOrigin,
+        Vector3 rayDirection,
+        Vector3 vertex0,
+        Vector3 vertex1,
+        Vector3 vertex2,
+        out float distance,
+        out Vector3 normal)
+    {
+        distance = 0f;
+        normal = default;
+        var edge1 = vertex1 - vertex0;
+        var edge2 = vertex2 - vertex0;
+        var cross = Vector3.Cross(rayDirection, edge2);
+        var determinant = Vector3.Dot(edge1, cross);
+        if (Mathf.Abs(determinant) < RayTriangleEpsilon)
+        {
+            return false;
+        }
+
+        var inverseDeterminant = 1f / determinant;
+        var originOffset = rayOrigin - vertex0;
+        var u = Vector3.Dot(originOffset, cross) * inverseDeterminant;
+        if (u < 0f || u > 1f)
+        {
+            return false;
+        }
+
+        var secondCross = Vector3.Cross(originOffset, edge1);
+        var v = Vector3.Dot(rayDirection, secondCross) * inverseDeterminant;
+        if (v < 0f || u + v > 1f)
+        {
+            return false;
+        }
+
+        distance = Vector3.Dot(edge2, secondCross) * inverseDeterminant;
+        if (distance < 0f)
+        {
+            return false;
+        }
+
+        normal = Vector3.Cross(edge1, edge2).normalized;
+        return true;
     }
 
     private static float GetPointerToleranceRadius(

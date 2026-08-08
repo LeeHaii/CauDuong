@@ -27,6 +27,12 @@
 # Recordings can get excessive in size
 /[Rr]ecordings/
 
+# Local Unity diagnostic captures and crash recovery scenes
+/Assets/Screenshots/
+/Assets/Screenshots.meta
+/Assets/_Recovery/
+/Assets/_Recovery.meta
+
 # Uncomment this line if you wish to ignore the asset store tools plugin
 # /[Aa]ssets/AssetStoreTools*
 

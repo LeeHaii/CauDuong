@@ -110,6 +110,7 @@ public sealed partial class IfcOperationsDashboard
     private TextField inspectionNoteInput;
     private Texture2D inspectionPreviewTexture;
     private IfcAssetRecord inspectionLinkedRecord;
+    private Coroutine inspectionMarkerLinkRoutine;
     private DashboardModule activeModule;
     private bool moduleUiBound;
     private string selectedIfcPath;
@@ -200,9 +201,6 @@ public sealed partial class IfcOperationsDashboard
         root.Q<Button>("inspection-button").clicked += ToggleInspectionPopup;
         root.Q<Button>("open-field-from-report-button").clicked +=
             () => OpenInspectionDialogFromReport(false);
-        root.Q<Button>("add-element-inspection-button").clicked +=
-            () => OpenInspectionDialogFromReport(true);
-
         filterProjectInput.RegisterValueChangedCallback(_ => BuildRegistryList());
         filterProvinceInput.RegisterValueChangedCallback(_ => BuildRegistryList());
         filterWardInput.RegisterValueChangedCallback(_ => BuildRegistryList());
@@ -268,6 +266,11 @@ public sealed partial class IfcOperationsDashboard
         }
         else if (module == DashboardModule.Report)
         {
+            if (startupLoading)
+            {
+                SetLoadingVisible(true);
+            }
+
             RefreshDashboard();
             BuildInspectionMarkers();
         }
@@ -333,55 +336,114 @@ public sealed partial class IfcOperationsDashboard
 
     private IEnumerator LoadRegisteredModels()
     {
-        if (operationsDatabase == null || !operationsDatabase.IsAvailable)
-        {
-            yield return LoadDefaultModels();
-            yield break;
-        }
+        startupLoading = true;
+        SetLoadingVisible(true);
+        SetLoadingProgress(0.04f, "Đang kiểm tra kho dữ liệu mô hình...");
+        yield return null;
 
-        SeedDefaultModelRegistry();
-        LoadRegistryFromDatabase();
         var paths = new List<string>();
-        foreach (var record in modelRegistry.Where(record => record.IsEnabled))
+        if (operationsDatabase != null && operationsDatabase.IsAvailable)
         {
-            var path = EnsureRegistryModelAvailable(record);
-            if (!string.IsNullOrWhiteSpace(path) &&
-                (loader == null || !loader.LoadedModels.Any(model =>
-                    string.Equals(
-                        loader.GetModelSourcePath(model),
-                        path,
-                        StringComparison.OrdinalIgnoreCase))))
+            SeedDefaultModelRegistry();
+            LoadRegistryFromDatabase();
+            foreach (var record in modelRegistry.Where(record => record.IsEnabled))
             {
-                paths.Add(path);
+                var path = EnsureRegistryModelAvailable(record);
+                if (!string.IsNullOrWhiteSpace(path) &&
+                    (loader == null || !loader.LoadedModels.Any(model =>
+                        string.Equals(
+                            loader.GetModelSourcePath(model),
+                            path,
+                            StringComparison.OrdinalIgnoreCase))))
+                {
+                    paths.Add(path);
+                }
+            }
+        }
+        else
+        {
+            var defaultDirectory = GetDefaultIfcDirectory();
+            if (Directory.Exists(defaultDirectory))
+            {
+                paths.AddRange(Directory
+                    .GetFiles(defaultDirectory, "*.ifc", SearchOption.TopDirectoryOnly)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .Where(path => loader == null || !loader.LoadedModels.Any(model =>
+                        string.Equals(
+                            loader.GetModelSourcePath(model),
+                            path,
+                            StringComparison.OrdinalIgnoreCase)))
+                    .Take(Mathf.Max(1, defaultModelLimit)));
             }
         }
 
-        if (loader == null || paths.Count == 0)
+        if (loader == null)
         {
+            SetLoadingProgress(1f, "Không tìm thấy bộ nạp IFC.");
+            yield return null;
+            startupLoading = false;
             startupLoadRoutine = null;
+            SetLoadingVisible(false);
             RefreshModuleData();
             yield break;
         }
 
-        startupLoading = true;
-        SetLoadingVisible(activeModule == DashboardModule.Report);
-        for (var index = 0; index < paths.Count; index++)
+        var completedCount = 0;
+        var failedCount = 0;
+        Action<GameObject> completed = _ => completedCount++;
+        Action<string> failed = _ => failedCount++;
+        loader.LoadCompleted += completed;
+        loader.LoadFailed += failed;
+
+        foreach (var path in paths)
         {
-            if (loadingMessage != null)
+            loader.LoadIFC(path);
+        }
+
+        var lastSettledCount = -1;
+        while (completedCount + failedCount < paths.Count || loader.IsLoading)
+        {
+            var settledCount = completedCount + failedCount;
+            if (settledCount != lastSettledCount)
             {
-                loadingMessage.text =
-                    $"Đang nạp mô hình {index + 1}/{paths.Count}: " +
-                    Path.GetFileNameWithoutExtension(paths[index]);
+                lastSettledCount = settledCount;
+                SetLoadingProgress(
+                    paths.Count == 0
+                        ? 0.82f
+                        : 0.1f + 0.76f * settledCount / paths.Count,
+                    $"Đang nạp mô hình IFC: {settledCount}/{paths.Count}");
             }
 
-            yield return LoadRegisteredPath(paths[index]);
+            if (settledCount >= paths.Count && loader.IsLoading)
+            {
+                SetLoadingProgress(
+                    0.9f,
+                    "Đang tối ưu mesh, proxy khoảng cách và static batching...");
+            }
+
+            yield return null;
         }
+
+        loader.LoadCompleted -= completed;
+        loader.LoadFailed -= failed;
+        SetLoadingProgress(0.95f, "Đang lập chỉ mục cấu kiện và đồng bộ hiện trường...");
+        RebuildModelIndex();
+        RefreshModuleData();
+        if (IsReportModuleActive)
+        {
+            BuildInspectionMarkers();
+        }
+
+        yield return null;
+        yield return new WaitForEndOfFrame();
+        SetLoadingProgress(
+            1f,
+            $"Đã sẵn sàng {loader.LoadedModels.Count:N0} mô hình và {records.Count:N0} cấu kiện.");
+        yield return null;
 
         startupLoading = false;
         startupLoadRoutine = null;
         SetLoadingVisible(false);
-        RebuildModelIndex();
-        RefreshModuleData();
         SetImportStatus($"Đã nạp {loader.LoadedModels.Count:N0} mô hình IFC từ kho dữ liệu.");
     }
 
@@ -1152,17 +1214,6 @@ public sealed partial class IfcOperationsDashboard
                 $"{inspection.Latitude:F6}, {inspection.Longitude:F6}\n{inspection.Elevation:F1} m",
                 "field-table-coordinate"));
 
-            var actionCell = new VisualElement();
-            actionCell.AddToClassList("field-table-cell");
-            actionCell.AddToClassList("field-table-action");
-            var open = new Button(() => OpenInspectionInReport(inspection))
-            {
-                text = "MỞ",
-                tooltip = "Mở vị trí trên bản đồ"
-            };
-            open.AddToClassList("field-open-button");
-            actionCell.Add(open);
-            row.Add(actionCell);
             fieldHistoryList.Add(row);
         }
     }
@@ -1295,14 +1346,48 @@ public sealed partial class IfcOperationsDashboard
         }
 
         return records.FirstOrDefault(record =>
-            string.Equals(
-                record.SourceFile,
-                inspection.SourceFile,
-                StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(
-                GetElementKey(record.Metadata),
-                inspection.ElementKey,
-                StringComparison.OrdinalIgnoreCase));
+            SourceFileMatches(record.SourceFile, inspection.SourceFile) &&
+            ElementKeyMatches(record.Metadata, inspection.ElementKey));
+    }
+
+    private static bool SourceFileMatches(string recordSource, string inspectionSource)
+    {
+        if (string.IsNullOrWhiteSpace(inspectionSource))
+        {
+            return true;
+        }
+
+        if (string.Equals(recordSource, inspectionSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return string.Equals(
+            Path.GetFileNameWithoutExtension(recordSource),
+            Path.GetFileNameWithoutExtension(inspectionSource),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ElementKeyMatches(IfcElementMetadata metadata, string elementKey)
+    {
+        if (metadata == null || string.IsNullOrWhiteSpace(elementKey))
+        {
+            return false;
+        }
+
+        var normalized = elementKey.Trim().TrimStart('#');
+        return string.Equals(
+                   GetElementKey(metadata).TrimStart('#'),
+                   normalized,
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   metadata.GlobalId,
+                   normalized,
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   metadata.EntityLabel.ToString(CultureInfo.InvariantCulture),
+                   normalized,
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private void BuildInspectionMarkers()
@@ -1319,12 +1404,14 @@ public sealed partial class IfcOperationsDashboard
             IfcInspectionMarker marker;
             if (asset != null)
             {
-                var markerPosition = asset.Bounds.center +
-                                     Vector3.up * Mathf.Max(2f, asset.Bounds.extents.y + 2f);
+                var assetBounds = RefreshLiveBounds(asset);
+                var markerPosition = assetBounds.center +
+                                     Vector3.up * Mathf.Max(2f, assetBounds.extents.y + 2f);
                 marker = IfcInspectionMarker.Create(
                     asset.Metadata.transform,
                     markerPosition,
                     inspection.Id,
+                    asset.Metadata,
                     viewingCamera,
                     inspection.ElementName,
                     inspection.IsResolved);
@@ -1347,6 +1434,7 @@ public sealed partial class IfcOperationsDashboard
                     anchor,
                     anchor.position + Vector3.up * 3f,
                     inspection.Id,
+                    null,
                     viewingCamera,
                     inspection.ElementName,
                     inspection.IsResolved);
@@ -1354,6 +1442,153 @@ public sealed partial class IfcOperationsDashboard
 
             inspectionMarkers[inspection.Id] = marker;
         }
+
+        if (inspectionMarkerLinkRoutine != null)
+        {
+            StopCoroutine(inspectionMarkerLinkRoutine);
+        }
+
+        inspectionMarkerLinkRoutine = StartCoroutine(LinkUnassignedInspectionMarkers());
+    }
+
+    private IEnumerator LinkUnassignedInspectionMarkers()
+    {
+        var databaseUpdated = false;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            if (attempt == 0)
+            {
+                yield return new WaitForEndOfFrame();
+            }
+            else
+            {
+                yield return new WaitForSecondsRealtime(0.25f);
+            }
+
+            var pendingCount = 0;
+            foreach (var pair in inspectionMarkers)
+            {
+                var marker = pair.Value;
+                if (marker == null)
+                {
+                    continue;
+                }
+
+                var inspection = fieldInspections.FirstOrDefault(record =>
+                    record.Id == pair.Key);
+                if (inspection.Id == 0)
+                {
+                    continue;
+                }
+
+                IfcAssetRecord record = null;
+                if (marker.LinkedElement != null)
+                {
+                    recordsByMetadata.TryGetValue(marker.LinkedElement, out record);
+                }
+                else
+                {
+                    pendingCount++;
+                    record = FindNearestAssetForMarker(marker.transform.position, inspection);
+                }
+
+                if (record == null)
+                {
+                    continue;
+                }
+
+                marker.AssignLinkedElement(record.Metadata);
+                if ((!SourceFileMatches(record.SourceFile, inspection.SourceFile) ||
+                     !ElementKeyMatches(record.Metadata, inspection.ElementKey)) &&
+                    operationsDatabase != null &&
+                    operationsDatabase.UpdateFieldInspectionLink(
+                        inspection.Id,
+                        record.SourceFile,
+                        GetElementKey(record.Metadata)))
+                {
+                    databaseUpdated = true;
+                }
+
+                pendingCount--;
+            }
+
+            if (pendingCount == 0)
+            {
+                break;
+            }
+        }
+
+        inspectionMarkerLinkRoutine = null;
+        if (!databaseUpdated)
+        {
+            yield break;
+        }
+
+        LoadInspectionsFromDatabase();
+        BuildInspectionPopup();
+        BuildFieldHistory();
+        if (selectedRecord != null)
+        {
+            BuildElementInspectionHistory(selectedRecord);
+        }
+    }
+
+    private IfcAssetRecord FindNearestAssetForMarker(
+        Vector3 markerPosition,
+        FieldInspectionRecord inspection)
+    {
+        IfcAssetRecord nearest = null;
+        var nearestScore = 250f * 250f;
+        foreach (var record in records)
+        {
+            if (record == null || record.Metadata == null)
+            {
+                continue;
+            }
+
+            var bounds = RefreshLiveBounds(record);
+            var closest = bounds.ClosestPoint(markerPosition);
+            var horizontal = new Vector2(
+                markerPosition.x - closest.x,
+                markerPosition.z - closest.z);
+            var vertical = markerPosition.y >= bounds.max.y
+                ? markerPosition.y - bounds.max.y
+                : markerPosition.y < bounds.min.y
+                    ? bounds.min.y - markerPosition.y
+                    : 0f;
+            var score = horizontal.sqrMagnitude + vertical * vertical;
+            if (NamesLikelyMatch(record.Name, inspection.ElementName))
+            {
+                score *= 0.2f;
+            }
+
+            score += bounds.size.sqrMagnitude * 0.00000001f;
+            if (score >= nearestScore)
+            {
+                continue;
+            }
+
+            nearest = record;
+            nearestScore = score;
+        }
+
+        return nearest;
+    }
+
+    private static bool NamesLikelyMatch(string recordName, string inspectionName)
+    {
+        if (string.IsNullOrWhiteSpace(recordName) ||
+            string.IsNullOrWhiteSpace(inspectionName))
+        {
+            return false;
+        }
+
+        return recordName.IndexOf(
+                   inspectionName,
+                   StringComparison.CurrentCultureIgnoreCase) >= 0 ||
+               inspectionName.IndexOf(
+                   recordName,
+                   StringComparison.CurrentCultureIgnoreCase) >= 0;
     }
 
     private void BuildElementInspectionHistory(IfcAssetRecord record)
@@ -1363,16 +1598,9 @@ public sealed partial class IfcOperationsDashboard
             return;
         }
 
-        var elementKey = GetElementKey(record.Metadata);
         var history = fieldInspections.Where(inspection =>
-                string.Equals(
-                    inspection.SourceFile,
-                    record.SourceFile,
-                    StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(
-                    inspection.ElementKey,
-                    elementKey,
-                    StringComparison.OrdinalIgnoreCase))
+                SourceFileMatches(record.SourceFile, inspection.SourceFile) &&
+                ElementKeyMatches(record.Metadata, inspection.ElementKey))
             .OrderByDescending(inspection => inspection.CreatedAt)
             .ToArray();
 
@@ -1442,6 +1670,12 @@ public sealed partial class IfcOperationsDashboard
 
     private void DestroyInspectionMarkers()
     {
+        if (inspectionMarkerLinkRoutine != null)
+        {
+            StopCoroutine(inspectionMarkerLinkRoutine);
+            inspectionMarkerLinkRoutine = null;
+        }
+
         foreach (var marker in inspectionMarkers.Values)
         {
             if (marker != null)
@@ -1488,6 +1722,14 @@ public sealed partial class IfcOperationsDashboard
             if (inspection.Id == 0)
             {
                 return false;
+            }
+
+            if (marker.LinkedElement != null &&
+                recordsByMetadata.TryGetValue(marker.LinkedElement, out var linkedRecord))
+            {
+                SelectRecord(linkedRecord, true);
+                SetImportStatus($"Đã mở và làm nổi bật cấu kiện gắn với kiểm tra: {inspection.ElementName}");
+                return true;
             }
 
             FocusInspection(inspection);

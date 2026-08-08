@@ -1145,14 +1145,41 @@
 
 .loading-overlay {
     position: absolute;
-    top: 0;
+    top: 76px;
     right: 0;
     bottom: 0;
     left: 0;
     display: none;
     align-items: center;
     justify-content: center;
-    background-color: rgba(10, 17, 29, 0.91);
+    background-color: rgba(10, 17, 29, 0.95);
+}
+
+.loading-surface {
+    width: 520px;
+    max-width: 82%;
+    padding: 34px 44px 30px 44px;
+    align-items: center;
+    border-width: 1px;
+    border-color: #2f4058;
+    border-radius: 8px;
+    background-color: #111a29;
+}
+
+.loading-brand {
+    color: #79d8ff;
+    font-size: 10px;
+    -unity-font-style: bold;
+    letter-spacing: 0;
+}
+
+.loading-title {
+    margin-top: 7px;
+    margin-bottom: 26px;
+    color: #f5f8fc;
+    font-size: 20px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
 }
 
 .loading-spinner {
@@ -1167,11 +1194,35 @@
 
 .loading-message {
     max-width: 680px;
-    color: #27c4ff;
-    font-size: 13px;
+    min-height: 38px;
+    color: #dce9f6;
+    font-size: 12px;
     -unity-font-style: bold;
     -unity-text-align: middle-center;
     white-space: normal;
+}
+
+.loading-progress-track {
+    width: 100%;
+    height: 6px;
+    margin-top: 17px;
+    overflow: hidden;
+    border-radius: 3px;
+    background-color: #26364b;
+}
+
+.loading-progress-fill {
+    width: 0%;
+    height: 6px;
+    border-radius: 3px;
+    background-color: #27bdf2;
+}
+
+.loading-detail {
+    margin-top: 11px;
+    color: #8fa4bc;
+    font-size: 10px;
+    -unity-text-align: middle-center;
 }
 
 .dashboard-compact .brand-block {
@@ -2194,26 +2245,6 @@
     flex-shrink: 0;
 }
 
-.field-table-action {
-    width: 54px;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: center;
-}
-
-.field-open-button {
-    width: 40px;
-    height: 28px;
-    padding: 0;
-    border-width: 1px;
-    border-color: #afc7ea;
-    border-radius: 4px;
-    background-color: #edf4ff;
-    color: #2167e8;
-    font-size: 8px;
-    -unity-font-style: bold;
-}
-
 .inspection-form-dialog {
     width: 920px;
     max-height: 88%;
@@ -2469,4 +2500,94 @@
 
 .dashboard-narrow .module-nav-grid {
     height: 190px;
+}
+
+/* Discrete readability breakpoints keep operational data legible at every window size. */
+.dashboard-root .asset-row,
+.dashboard-root .category-count,
+.dashboard-root .property-key,
+.dashboard-root .property-value,
+.dashboard-root .data-cell,
+.dashboard-root .field-table-cell,
+.dashboard-root .field-panel-meta,
+.dashboard-root .field-history-meta,
+.dashboard-root .inspection-popup-meta,
+.dashboard-root .element-inspection-subtitle,
+.dashboard-root .element-inspection-kpi-label,
+.dashboard-root .element-inspection-time,
+.dashboard-root .element-inspection-location,
+.dashboard-root .element-inspection-note,
+.dashboard-root .analytics-kpi-label,
+.dashboard-root .analytics-legend-label,
+.dashboard-root .analytics-legend-value,
+.dashboard-root .analytics-column-label,
+.dashboard-root .analytics-source-name,
+.dashboard-root .analytics-source-value {
+    font-size: 10px;
+}
+
+.dashboard-roomy .toolbar-button,
+.dashboard-roomy .map-dropdown,
+.dashboard-roomy .filter-button,
+.dashboard-roomy .dashboard-input,
+.dashboard-roomy .module-field,
+.dashboard-roomy .popup-command {
+    font-size: 12px;
+}
+
+.dashboard-roomy .asset-row,
+.dashboard-roomy .category-count,
+.dashboard-roomy .property-key,
+.dashboard-roomy .property-value,
+.dashboard-roomy .data-cell,
+.dashboard-roomy .field-table-cell,
+.dashboard-roomy .field-panel-meta,
+.dashboard-roomy .field-history-meta,
+.dashboard-roomy .inspection-popup-meta,
+.dashboard-roomy .element-inspection-subtitle,
+.dashboard-roomy .element-inspection-kpi-label,
+.dashboard-roomy .element-inspection-time,
+.dashboard-roomy .element-inspection-location,
+.dashboard-roomy .element-inspection-note,
+.dashboard-roomy .analytics-kpi-label,
+.dashboard-roomy .analytics-legend-label,
+.dashboard-roomy .analytics-legend-value,
+.dashboard-roomy .analytics-column-label,
+.dashboard-roomy .analytics-source-name,
+.dashboard-roomy .analytics-source-value {
+    font-size: 11px;
+}
+
+.dashboard-roomy .panel-heading,
+.dashboard-roomy .field-panel-title,
+.dashboard-roomy .property-heading,
+.dashboard-roomy .analytics-panel-title {
+    font-size: 14px;
+}
+
+.dashboard-short .home-content,
+.dashboard-short .workspace-content {
+    padding-top: 20px;
+    padding-bottom: 20px;
+}
+
+.dashboard-short .home-heading-row {
+    margin-bottom: 16px;
+}
+
+.dashboard-short .module-nav-card {
+    width: 210px;
+    min-width: 210px;
+    height: 210px;
+    min-height: 210px;
+    padding: 16px;
+}
+
+.dashboard-short .module-nav-grid {
+    height: 210px;
+}
+
+.dashboard-short .loading-surface {
+    padding-top: 22px;
+    padding-bottom: 20px;
 }
