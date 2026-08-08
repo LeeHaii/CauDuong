@@ -1,3 +1,4 @@
+using CauDuong.IfcOperations;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -5,12 +6,18 @@ using UnityEngine.Rendering;
 public sealed class IfcInspectionMarker : MonoBehaviour
 {
     private static Material openMaterial;
-    private static Material resolvedMaterial;
+    private static Material operationalMaterial;
+    private static Material warningMaterial;
+    private static Material criticalMaterial;
+    private static Material repairingMaterial;
     private static Material pointMaterial;
     private static Material textMaterial;
 
     private Camera viewingCamera;
     private Transform callout;
+    private Renderer calloutBackground;
+    private TextMesh calloutLabel;
+    private string calloutTitle;
     private float nextSurfaceProbeTime;
 
     public long InspectionId { get; private set; }
@@ -61,7 +68,7 @@ public sealed class IfcInspectionMarker : MonoBehaviour
         background.transform.localScale = new Vector3(4.9f, 1.45f, 0.1f);
         ConfigureRenderer(
             background.GetComponent<Renderer>(),
-            GetStatusMaterial(isResolved));
+            GetOpenMaterial());
 
         var textObject = new GameObject("Callout Label");
         textObject.transform.SetParent(calloutRoot.transform, false);
@@ -69,8 +76,6 @@ public sealed class IfcInspectionMarker : MonoBehaviour
         var label = textObject.AddComponent<TextMesh>();
         var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         label.font = font;
-        label.text =
-            $"{(isResolved ? "ĐÃ XỬ LÝ" : "CHƯA XỬ LÝ")}\n{Truncate(title, 34)}";
         label.alignment = TextAlignment.Center;
         label.anchor = TextAnchor.MiddleCenter;
         label.color = Color.white;
@@ -88,7 +93,56 @@ public sealed class IfcInspectionMarker : MonoBehaviour
         marker.LinkedElement = linkedElement;
         marker.viewingCamera = camera;
         marker.callout = calloutRoot.transform;
+        marker.calloutBackground = background.GetComponent<Renderer>();
+        marker.calloutLabel = label;
+        marker.calloutTitle = title;
+        marker.SetInspectionStatus(isResolved);
         return marker;
+    }
+
+    public void SetInspectionStatus(bool isResolved)
+    {
+        ApplyStatus(
+            isResolved ? "ĐÃ XỬ LÝ" : "CHƯA XỬ LÝ",
+            isResolved ? GetOperationalMaterial() : GetOpenMaterial());
+    }
+
+    public void SetElementStatus(IfcOperationalStatus status, bool hasUserUpdate)
+    {
+        if (IfcInspectionCalloutPolicy.ShouldShowUnresolved(status, hasUserUpdate))
+        {
+            ApplyStatus("CHƯA XỬ LÝ", GetOpenMaterial());
+            return;
+        }
+
+        switch (status)
+        {
+            case IfcOperationalStatus.Warning:
+                ApplyStatus("BẢO TRÌ", GetWarningMaterial());
+                break;
+            case IfcOperationalStatus.Critical:
+                ApplyStatus("HỎNG HÓC", GetCriticalMaterial());
+                break;
+            case IfcOperationalStatus.Repairing:
+                ApplyStatus("ĐANG SỬA", GetRepairingMaterial());
+                break;
+            default:
+                ApplyStatus("CHƯA XỬ LÝ", GetOpenMaterial());
+                break;
+        }
+    }
+
+    private void ApplyStatus(string statusText, Material material)
+    {
+        if (calloutLabel != null)
+        {
+            calloutLabel.text = $"{statusText}\n{Truncate(calloutTitle, 34)}";
+        }
+
+        if (calloutBackground != null)
+        {
+            calloutBackground.sharedMaterial = material;
+        }
     }
 
     private void LateUpdate()
@@ -200,18 +254,39 @@ public sealed class IfcInspectionMarker : MonoBehaviour
             new Color32(222, 49, 72, 255));
     }
 
-    private static Material GetStatusMaterial(bool isResolved)
+    private static Material GetOpenMaterial()
     {
-        if (isResolved)
-        {
-            return resolvedMaterial ??= CreateMaterial(
-                "Resolved Inspection Callout",
-                new Color32(8, 126, 87, 255));
-        }
-
         return openMaterial ??= CreateMaterial(
             "Open Inspection Callout",
             new Color32(181, 105, 8, 255));
+    }
+
+    private static Material GetOperationalMaterial()
+    {
+        return operationalMaterial ??= CreateMaterial(
+            "Operational Inspection Callout",
+            new Color32(8, 126, 87, 255));
+    }
+
+    private static Material GetWarningMaterial()
+    {
+        return warningMaterial ??= CreateMaterial(
+            "Warning Inspection Callout",
+            new Color32(214, 140, 17, 255));
+    }
+
+    private static Material GetCriticalMaterial()
+    {
+        return criticalMaterial ??= CreateMaterial(
+            "Critical Inspection Callout",
+            new Color32(190, 42, 55, 255));
+    }
+
+    private static Material GetRepairingMaterial()
+    {
+        return repairingMaterial ??= CreateMaterial(
+            "Repairing Inspection Callout",
+            new Color32(33, 104, 205, 255));
     }
 
     private static Material GetTextMaterial(Font font)

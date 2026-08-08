@@ -124,7 +124,15 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
 
             try
             {
-                Marshal.WriteInt16(fileBuffer, 0);
+                // The native dialog may only write a single trailing null for one
+                // selected file. Clear the complete buffer first so the parser is
+                // guaranteed to encounter a double-null terminator instead of stale
+                // unmanaged memory.
+                Marshal.Copy(
+                    new byte[MaxPathCharacters * sizeof(char)],
+                    0,
+                    fileBuffer,
+                    MaxPathCharacters * sizeof(char));
 
                 var data = new OpenFileNameData
                 {
@@ -147,9 +155,18 @@ public sealed class RuntimeIfcLoader : MonoBehaviour
                 }
 
                 var parts = ReadMultiString(fileBuffer);
-                if (parts.Length <= 1)
+                if (parts.Length == 0)
                 {
-                    return parts;
+                    return Array.Empty<string>();
+                }
+
+                // GetOpenFileName only guarantees a second null-delimited value
+                // when multi-select is enabled. Reading beyond the first value for
+                // a single selection can pick up uninitialized buffer contents and
+                // feed illegal characters into Path.Combine.
+                if (!allowMultiSelect || parts.Length == 1)
+                {
+                    return new[] { parts[0] };
                 }
 
                 var directory = parts[0];

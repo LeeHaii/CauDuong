@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using CauDuong.IfcOperations;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -14,7 +15,8 @@ public sealed partial class IfcOperationsDashboard
         Home,
         Data,
         Field,
-        Report
+        Report,
+        Dashboard
     }
 
     private readonly List<IfcModelRegistryRecord> modelRegistry = new();
@@ -78,6 +80,9 @@ public sealed partial class IfcOperationsDashboard
     private VisualElement inspectionFormOverlay;
     private VisualElement inspectionImagePreview;
     private VisualElement inspectionImagePlaceholder;
+    private VisualElement inspectionDetailOverlay;
+    private VisualElement inspectionDetailImage;
+    private VisualElement inspectionDetailImagePlaceholder;
     private VisualElement elementInspectionHistory;
     private VisualElement elementInspectionList;
     private Label homeModelCount;
@@ -87,34 +92,58 @@ public sealed partial class IfcOperationsDashboard
     private Label fieldRecordCountLabel;
     private Label selectedIfcPathLabel;
     private Label modelUploadError;
+    private Label modelUploadTitle;
     private Label inspectionImagePathLabel;
     private Label inspectionFormError;
+    private Label inspectionFormTitle;
     private Label elementInspectionTotal;
     private Label elementInspectionOpen;
     private Label elementInspectionResolved;
+    private Label inspectionDetailCreatedAt;
+    private Label inspectionDetailStatus;
+    private Label inspectionDetailName;
+    private Label inspectionDetailType;
+    private Label inspectionDetailCreator;
+    private Label inspectionDetailProject;
+    private Label inspectionDetailElement;
+    private Label inspectionDetailCoordinate;
+    private Label inspectionDetailNote;
     private Button inspectionButton;
+    private Button submitInspectionButton;
+    private Button chooseIfcFileButton;
+    private Button saveModelUploadButton;
+    private Button inspectionDetailDeleteButton;
     private TextField filterProjectInput;
     private TextField filterProvinceInput;
     private TextField filterWardInput;
     private TextField filterFileInput;
     private DropdownField modelProjectInput;
     private DropdownField modelProvinceInput;
+    private DropdownField homeProjectDropdown;
     private TextField modelWardInput;
     private TextField modelUnitInput;
     private DropdownField inspectionProjectDropdown;
     private DropdownField inspectionStatusDropdown;
     private TextField inspectionNameInput;
+    private TextField inspectionElementTypeInput;
+    private TextField inspectionCreatedByInput;
     private TextField inspectionLatitudeInput;
     private TextField inspectionLongitudeInput;
     private TextField inspectionElevationInput;
     private TextField inspectionNoteInput;
     private Texture2D inspectionPreviewTexture;
+    private Texture2D inspectionDetailTexture;
     private IfcAssetRecord inspectionLinkedRecord;
     private Coroutine inspectionMarkerLinkRoutine;
     private DashboardModule activeModule;
     private bool moduleUiBound;
     private string selectedIfcPath;
     private string selectedInspectionImagePath;
+    private IfcModelRegistryRecord? editingRegistryModel;
+    private FieldInspectionRecord? editingInspection;
+    private long displayedInspectionId;
+    private FieldInspectionRecord? displayedInspection;
+    private bool inspectionDetailDeleteArmed;
 
     private bool IsReportModuleActive => activeModule == DashboardModule.Report;
 
@@ -137,6 +166,10 @@ public sealed partial class IfcOperationsDashboard
         inspectionFormOverlay = root.Q<VisualElement>("inspection-form-overlay");
         inspectionImagePreview = root.Q<VisualElement>("inspection-image-preview");
         inspectionImagePlaceholder = root.Q<VisualElement>("inspection-image-placeholder");
+        inspectionDetailOverlay = root.Q<VisualElement>("inspection-detail-overlay");
+        inspectionDetailImage = root.Q<VisualElement>("inspection-detail-image");
+        inspectionDetailImagePlaceholder =
+            root.Q<VisualElement>("inspection-detail-image-placeholder");
         elementInspectionHistory = root.Q<VisualElement>("element-inspection-history");
         elementInspectionList = root.Q<VisualElement>("element-inspection-list");
         homeModelCount = root.Q<Label>("home-model-count");
@@ -146,23 +179,41 @@ public sealed partial class IfcOperationsDashboard
         fieldRecordCountLabel = root.Q<Label>("field-record-count");
         selectedIfcPathLabel = root.Q<Label>("selected-ifc-path");
         modelUploadError = root.Q<Label>("model-upload-error");
+        modelUploadTitle = root.Q<Label>("model-upload-title");
         inspectionImagePathLabel = root.Q<Label>("inspection-image-path");
         inspectionFormError = root.Q<Label>("inspection-form-error");
+        inspectionFormTitle = root.Q<Label>("inspection-form-title");
         elementInspectionTotal = root.Q<Label>("element-inspection-total");
         elementInspectionOpen = root.Q<Label>("element-inspection-open");
         elementInspectionResolved = root.Q<Label>("element-inspection-resolved");
+        inspectionDetailCreatedAt = root.Q<Label>("inspection-detail-created-at");
+        inspectionDetailStatus = root.Q<Label>("inspection-detail-status");
+        inspectionDetailName = root.Q<Label>("inspection-detail-name");
+        inspectionDetailType = root.Q<Label>("inspection-detail-type");
+        inspectionDetailCreator = root.Q<Label>("inspection-detail-creator");
+        inspectionDetailProject = root.Q<Label>("inspection-detail-project");
+        inspectionDetailElement = root.Q<Label>("inspection-detail-element");
+        inspectionDetailCoordinate = root.Q<Label>("inspection-detail-coordinate");
+        inspectionDetailNote = root.Q<Label>("inspection-detail-note");
         inspectionButton = root.Q<Button>("inspection-button");
+        submitInspectionButton = root.Q<Button>("submit-inspection-button");
+        chooseIfcFileButton = root.Q<Button>("choose-ifc-file-button");
+        saveModelUploadButton = root.Q<Button>("save-model-upload-button");
+        inspectionDetailDeleteButton = root.Q<Button>("inspection-detail-delete-button");
         filterProjectInput = root.Q<TextField>("filter-project-input");
         filterProvinceInput = root.Q<TextField>("filter-province-input");
         filterWardInput = root.Q<TextField>("filter-ward-input");
         filterFileInput = root.Q<TextField>("filter-file-input");
         modelProjectInput = root.Q<DropdownField>("model-project-input");
         modelProvinceInput = root.Q<DropdownField>("model-province-input");
+        homeProjectDropdown = root.Q<DropdownField>("home-project-dropdown");
         modelWardInput = root.Q<TextField>("model-ward-input");
         modelUnitInput = root.Q<TextField>("model-unit-input");
         inspectionProjectDropdown = root.Q<DropdownField>("inspection-project-dropdown");
         inspectionStatusDropdown = root.Q<DropdownField>("inspection-status-dropdown");
         inspectionNameInput = root.Q<TextField>("inspection-name-input");
+        inspectionElementTypeInput = root.Q<TextField>("inspection-element-type-input");
+        inspectionCreatedByInput = root.Q<TextField>("inspection-created-by-input");
         inspectionLatitudeInput = root.Q<TextField>("inspection-latitude-input");
         inspectionLongitudeInput = root.Q<TextField>("inspection-longitude-input");
         inspectionElevationInput = root.Q<TextField>("inspection-elevation-input");
@@ -180,6 +231,8 @@ public sealed partial class IfcOperationsDashboard
         root.Q<Button>("home-field-button").clicked += OpenFieldModule;
         root.Q<Button>("home-report-button").clicked +=
             () => ShowModule(DashboardModule.Report);
+        root.Q<Button>("home-dashboard-button").clicked +=
+            () => ShowModule(DashboardModule.Dashboard);
         root.Q<Button>("data-home-button").clicked +=
             () => ShowModule(DashboardModule.Home);
         root.Q<Button>("field-home-button").clicked +=
@@ -189,15 +242,20 @@ public sealed partial class IfcOperationsDashboard
         root.Q<Button>("open-model-upload-button").clicked += OpenModelUpload;
         root.Q<Button>("close-model-upload-button").clicked += CloseModelUpload;
         root.Q<Button>("cancel-model-upload-button").clicked += CloseModelUpload;
-        root.Q<Button>("choose-ifc-file-button").clicked += ChooseIfcForRegistry;
-        root.Q<Button>("save-model-upload-button").clicked += SaveModelUpload;
+        chooseIfcFileButton.clicked += ChooseIfcForRegistry;
+        saveModelUploadButton.clicked += SaveModelUpload;
         root.Q<Button>("open-inspection-form-button").clicked +=
             () => OpenInspectionDialog(false);
         root.Q<Button>("close-inspection-form-button").clicked += CloseInspectionDialog;
         root.Q<Button>("cancel-inspection-form-button").clicked += CloseInspectionDialog;
         root.Q<Button>("choose-inspection-image-button").clicked += ChooseInspectionImage;
         root.Q<Button>("use-selected-element-button").clicked += UseSelectedElement;
-        root.Q<Button>("submit-inspection-button").clicked += SaveInspection;
+        submitInspectionButton.clicked += SaveInspection;
+        root.Q<Button>("close-inspection-detail-button").clicked +=
+            CloseInspectionDetails;
+        root.Q<Button>("inspection-detail-map-button").clicked += OpenDisplayedInspectionOnMap;
+        root.Q<Button>("inspection-detail-edit-button").clicked += EditDisplayedInspection;
+        inspectionDetailDeleteButton.clicked += DeleteDisplayedInspection;
         root.Q<Button>("inspection-button").clicked += ToggleInspectionPopup;
         root.Q<Button>("open-field-from-report-button").clicked +=
             () => OpenInspectionDialogFromReport(false);
@@ -212,8 +270,10 @@ public sealed partial class IfcOperationsDashboard
         modelUnitInput.SetValueWithoutNotify("Ban Quản lý Dự án Đầu tư Xây dựng");
         inspectionStatusDropdown.choices = InspectionStatusChoices;
         inspectionStatusDropdown.index = 0;
+        inspectionStatusDropdown.SetEnabled(false);
         modelUploadOverlay.style.display = DisplayStyle.None;
         inspectionFormOverlay.style.display = DisplayStyle.None;
+        inspectionDetailOverlay.style.display = DisplayStyle.None;
         inspectionPopup.style.display = DisplayStyle.None;
         moduleUiBound = true;
 
@@ -240,6 +300,11 @@ public sealed partial class IfcOperationsDashboard
         }
 
         HidePopups();
+        if (module != DashboardModule.Dashboard && analyticsOverlay != null)
+        {
+            analyticsOverlay.style.display = DisplayStyle.None;
+            analyticsOverlay.RemoveFromClassList("analytics-standalone");
+        }
         homePage.style.display = module == DashboardModule.Home
             ? DisplayStyle.Flex
             : DisplayStyle.None;
@@ -249,7 +314,7 @@ public sealed partial class IfcOperationsDashboard
         fieldPage.style.display = module == DashboardModule.Field
             ? DisplayStyle.Flex
             : DisplayStyle.None;
-        reportPage.style.display = module == DashboardModule.Report
+        reportPage.style.display = module is DashboardModule.Report or DashboardModule.Dashboard
             ? DisplayStyle.Flex
             : DisplayStyle.None;
 
@@ -273,6 +338,13 @@ public sealed partial class IfcOperationsDashboard
 
             RefreshDashboard();
             BuildInspectionMarkers();
+        }
+        else if (module == DashboardModule.Dashboard)
+        {
+            LoadInspectionsFromDatabase();
+            RefreshDashboard();
+            BuildInspectionMarkers();
+            OpenAnalyticsDashboard(true);
         }
 
         UpdateModuleCounts();
@@ -315,14 +387,19 @@ public sealed partial class IfcOperationsDashboard
 
     private void ResetInspectionForm()
     {
+        editingInspection = null;
         inspectionLinkedRecord = null;
         inspectionNameInput.SetValueWithoutNotify(string.Empty);
+        inspectionElementTypeInput.SetValueWithoutNotify(string.Empty);
+        inspectionCreatedByInput.SetValueWithoutNotify("Người dùng hiện trường");
         inspectionNoteInput.SetValueWithoutNotify(string.Empty);
         inspectionLatitudeInput.SetValueWithoutNotify(string.Empty);
         inspectionLongitudeInput.SetValueWithoutNotify(string.Empty);
         inspectionElevationInput.SetValueWithoutNotify("0");
         inspectionStatusDropdown.index = 0;
         inspectionFormError.text = string.Empty;
+        inspectionFormTitle.text = "Tạo Ghi Nhận Hiện Trường";
+        submitInspectionButton.text = "Lưu Ghi Nhận";
         selectedInspectionImagePath = string.Empty;
         inspectionImagePathLabel.text = "Chưa chọn ảnh";
         inspectionImagePreview.style.backgroundImage = StyleKeyword.None;
@@ -592,6 +669,49 @@ public sealed partial class IfcOperationsDashboard
         }
     }
 
+    private FieldInspectionRecord FindNewestInspectionForElement(IfcAssetRecord record)
+    {
+        if (record?.Metadata == null)
+        {
+            return default;
+        }
+
+        return fieldInspections.FirstOrDefault(inspection =>
+            SourceFileMatches(record.SourceFile, inspection.SourceFile) &&
+            ElementKeyMatches(record.Metadata, inspection.ElementKey));
+    }
+
+    private int ResolveNewestInspectionsAfterReportExport()
+    {
+        if (operationsDatabase == null || records.Count == 0 || fieldInspections.Count == 0)
+        {
+            return 0;
+        }
+
+        var resolvedIds = new HashSet<long>();
+        foreach (var record in records)
+        {
+            var newestInspection = FindNewestInspectionForElement(record);
+            if (newestInspection.Id <= 0 || newestInspection.IsResolved ||
+                !resolvedIds.Add(newestInspection.Id))
+            {
+                continue;
+            }
+
+            if (!operationsDatabase.SetFieldInspectionResolved(newestInspection.Id, true))
+            {
+                resolvedIds.Remove(newestInspection.Id);
+            }
+        }
+
+        if (resolvedIds.Count > 0)
+        {
+            RefreshInspectionViews();
+        }
+
+        return resolvedIds.Count;
+    }
+
     private void RefreshModuleData()
     {
         if (!moduleUiBound)
@@ -647,57 +767,116 @@ public sealed partial class IfcOperationsDashboard
             var record = filtered[index];
             var row = new VisualElement();
             row.AddToClassList("data-table-row");
-            row.Add(CreateDataLabel((index + 1).ToString(), "data-cell-index"));
-            row.Add(CreateDataLabel(record.ProjectName, "data-cell-project"));
-            row.Add(CreateDataLabel(record.Province, "data-cell-place"));
-            row.Add(CreateDataLabel(record.Ward, "data-cell-place"));
-            row.Add(CreateDataLabel(record.ManagingUnit, "data-cell-unit"));
 
             var fileName = !string.IsNullOrWhiteSpace(record.StoredFileName)
                 ? record.StoredFileName
                 : Path.GetFileName(record.IfcPath);
-            var fileState = File.Exists(record.IfcPath)
-                ? record.HasStoredFile
-                    ? $"{fileName}\nSQLite • {FormatFileSize(record.StoredFileSize)}"
-                    : fileName
-                : record.HasStoredFile
-                    ? $"{fileName}\nSẵn sàng phục hồi từ SQLite"
-                    : $"{fileName}\nThiếu file";
-            var fileLabel = CreateDataLabel(
-                fileState,
-                "data-cell-file");
+            var fileLabel = CreateDataLabel($"▤  {fileName}", "data-cell-file");
             fileLabel.tooltip = record.IfcPath;
             row.Add(fileLabel);
-
-            var enabled = new Toggle
-            {
-                value = record.IsEnabled,
-                tooltip = record.IsEnabled
-                    ? "Đang dùng trong báo cáo"
-                    : "Không dùng trong báo cáo"
-            };
-            enabled.AddToClassList("registry-toggle");
-            enabled.RegisterValueChangedCallback(change =>
-                SetRegistryModelEnabled(record, change.newValue));
-            var enabledCell = new VisualElement();
-            enabledCell.AddToClassList("data-cell");
-            enabledCell.AddToClassList("data-cell-state");
-            enabledCell.Add(enabled);
-            row.Add(enabledCell);
-
-            var actions = new VisualElement();
-            actions.AddToClassList("data-cell");
-            actions.AddToClassList("data-cell-action");
-            var delete = new Button(() => DeleteRegistryModel(record))
-            {
-                text = "×",
-                tooltip = "Xóa mô hình khỏi kho dữ liệu"
-            };
-            delete.AddToClassList("registry-delete-button");
-            actions.Add(delete);
-            row.Add(actions);
+            row.Add(CreateDataLabel(record.ProjectName, "data-cell-project"));
+            row.Add(CreateDataLabel(
+                string.Join(", ", new[] { record.Ward, record.Province }
+                    .Where(value => !string.IsNullOrWhiteSpace(value))),
+                "data-cell-location"));
+            row.Add(CreateDataLabel(record.ManagingUnit, "data-cell-unit"));
+            row.Add(CreateDataLabel(FormatRegistryDate(record.CreatedAt), "data-cell-date"));
+            row.Add(CreateDataLabel(
+                record.StoredFileSize > 0
+                    ? FormatFileSize(record.StoredFileSize)
+                    : File.Exists(record.IfcPath)
+                        ? FormatFileSize(new FileInfo(record.IfcPath).Length)
+                        : "-",
+                "data-cell-size"));
+            row.Add(CreateRegistryState(record));
+            row.Add(CreateRegistryActions(record));
             registryList.Add(row);
         }
+    }
+
+    private VisualElement CreateRegistryState(IfcModelRegistryRecord record)
+    {
+        var cell = new VisualElement();
+        cell.AddToClassList("data-cell");
+        cell.AddToClassList("data-cell-state");
+        var state = new Button(() => SetRegistryModelEnabled(record, !record.IsEnabled))
+        {
+            text = record.IsEnabled ? "Đã render" : "Tạm dừng",
+            tooltip = record.IsEnabled
+                ? "Nhấn để tạm dừng mô hình trong báo cáo"
+                : "Nhấn để nạp mô hình vào báo cáo"
+        };
+        state.AddToClassList("registry-state-pill");
+        state.AddToClassList(record.IsEnabled
+            ? "registry-state-ready"
+            : "registry-state-paused");
+        cell.Add(state);
+        return cell;
+    }
+
+    private VisualElement CreateRegistryActions(IfcModelRegistryRecord record)
+    {
+        var actions = new VisualElement();
+        actions.AddToClassList("data-cell");
+        actions.AddToClassList("data-cell-action");
+        actions.Add(CreateRegistryActionButton(
+            "Xem 3D",
+            "registry-view-button",
+            () => OpenRegistryModelInReport(record),
+            "Mở mô hình trong không gian báo cáo"));
+        actions.Add(CreateRegistryActionButton(
+            "Sửa",
+            "registry-edit-button",
+            () => OpenRegistryEditor(record),
+            "Cập nhật thông tin mô hình"));
+        actions.Add(CreateRegistryActionButton(
+            "↓",
+            "registry-download-button",
+            () => ExportRegistryModel(record),
+            "Tải file IFC"));
+
+        var deleteArmed = false;
+        Button delete = null;
+        delete = CreateRegistryActionButton(
+            "×",
+            "registry-delete-button",
+            () =>
+            {
+                if (!deleteArmed)
+                {
+                    deleteArmed = true;
+                    delete.text = "?";
+                    delete.AddToClassList("registry-delete-confirm");
+                    delete.schedule.Execute(() =>
+                    {
+                        deleteArmed = false;
+                        delete.text = "×";
+                        delete.RemoveFromClassList("registry-delete-confirm");
+                    }).StartingIn(3500);
+                    return;
+                }
+
+                DeleteRegistryModel(record);
+            },
+            "Xóa mô hình khỏi kho dữ liệu");
+        actions.Add(delete);
+        return actions;
+    }
+
+    private static Button CreateRegistryActionButton(
+        string text,
+        string variantClass,
+        Action clicked,
+        string tooltip)
+    {
+        var button = new Button(clicked)
+        {
+            text = text,
+            tooltip = tooltip
+        };
+        button.AddToClassList("registry-action-button");
+        button.AddToClassList(variantClass);
+        return button;
     }
 
     private static Label CreateDataLabel(string text, string className)
@@ -728,6 +907,13 @@ public sealed partial class IfcOperationsDashboard
         return $"{bytes / (1024d * 1024d * 1024d):F1} GB";
     }
 
+    private static string FormatRegistryDate(string value)
+    {
+        return DateTime.TryParse(value, out var timestamp)
+            ? timestamp.ToString("yyyy-MM-dd")
+            : "-";
+    }
+
     private bool MatchesRegistryFilters(IfcModelRegistryRecord record)
     {
         return ContainsFilter(record.ProjectName, filterProjectInput.value) &&
@@ -750,11 +936,52 @@ public sealed partial class IfcOperationsDashboard
 
     private void OpenModelUpload()
     {
+        editingRegistryModel = null;
         UpdateModelProjectChoices();
         selectedIfcPath = string.Empty;
         selectedIfcPathLabel.text = "Chưa chọn file .ifc";
+        modelUploadTitle.text = "Thêm Mô Hình IFC";
+        saveModelUploadButton.text = "Thêm & Nạp Mô Hình";
+        chooseIfcFileButton.SetEnabled(true);
         modelUploadError.text = string.Empty;
         modelUploadOverlay.style.display = DisplayStyle.Flex;
+    }
+
+    private void OpenRegistryEditor(IfcModelRegistryRecord record)
+    {
+        editingRegistryModel = record;
+        UpdateModelProjectChoices();
+        if (!modelProjectInput.choices.Contains(record.ProjectName))
+        {
+            modelProjectInput.choices = modelProjectInput.choices
+                .Append(record.ProjectName)
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+
+        modelProjectInput.SetValueWithoutNotify(record.ProjectName);
+        if (!modelProvinceInput.choices.Contains(record.Province))
+        {
+            modelProvinceInput.choices = modelProvinceInput.choices
+                .Append(record.Province)
+                .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+
+        modelProvinceInput.SetValueWithoutNotify(record.Province);
+        modelWardInput.SetValueWithoutNotify(record.Ward);
+        modelUnitInput.SetValueWithoutNotify(record.ManagingUnit);
+        selectedIfcPath = record.IfcPath;
+        selectedIfcPathLabel.text = string.IsNullOrWhiteSpace(record.StoredFileName)
+            ? Path.GetFileName(record.IfcPath)
+            : record.StoredFileName;
+        selectedIfcPathLabel.tooltip = record.IfcPath;
+        modelUploadTitle.text = "Cập Nhật Mô Hình IFC";
+        saveModelUploadButton.text = "Lưu Thay Đổi";
+        chooseIfcFileButton.SetEnabled(false);
+        modelUploadError.text = string.Empty;
+        modelUploadOverlay.style.display = DisplayStyle.Flex;
+        modelUploadOverlay.BringToFront();
     }
 
     private void CloseModelUpload()
@@ -786,8 +1013,8 @@ public sealed partial class IfcOperationsDashboard
         var province = modelProvinceInput.value?.Trim();
         if (string.IsNullOrWhiteSpace(project) ||
             string.IsNullOrWhiteSpace(province) ||
-            string.IsNullOrWhiteSpace(selectedIfcPath) ||
-            !File.Exists(selectedIfcPath))
+            (!editingRegistryModel.HasValue &&
+             (string.IsNullOrWhiteSpace(selectedIfcPath) || !File.Exists(selectedIfcPath))))
         {
             modelUploadError.text = "Vui lòng nhập dự án, tỉnh/thành phố và chọn file IFC hợp lệ.";
             return;
@@ -795,6 +1022,41 @@ public sealed partial class IfcOperationsDashboard
 
         try
         {
+            if (editingRegistryModel.HasValue)
+            {
+                var existing = editingRegistryModel.Value;
+                var updated = new IfcModelRegistryRecord(
+                    existing.Id,
+                    project,
+                    province,
+                    modelWardInput.value?.Trim(),
+                    modelUnitInput.value?.Trim(),
+                    existing.IfcPath,
+                    existing.IsEnabled,
+                    existing.CreatedAt,
+                    existing.UpdatedAt,
+                    existing.StoredFileName,
+                    existing.HasStoredFile,
+                    existing.StoredFileSize);
+                if (operationsDatabase == null ||
+                    !operationsDatabase.SaveModelRegistry(updated))
+                {
+                    modelUploadError.text =
+                        "Không thể cập nhật thông tin mô hình trong SQLite.";
+                    return;
+                }
+
+                CloseModelUpload();
+                editingRegistryModel = null;
+                LoadRegistryFromDatabase();
+                BuildRegistryList();
+                UpdateModelProjectChoices();
+                UpdateInspectionProjectChoices();
+                UpdateModuleCounts();
+                SetImportStatus($"Đã cập nhật thông tin {Path.GetFileName(existing.IfcPath)}.");
+                return;
+            }
+
             var managedPath = PersistIfcModel(selectedIfcPath);
             var record = new IfcModelRegistryRecord(
                 0,
@@ -984,22 +1246,47 @@ public sealed partial class IfcOperationsDashboard
         modelProjectInput.choices = choices;
         modelProjectInput.SetValueWithoutNotify(
             choices.Contains(current) ? current : choices[0]);
+
+        if (homeProjectDropdown != null)
+        {
+            var homeCurrent = homeProjectDropdown.value;
+            var homeChoices = new List<string> { "Tất Cả Dự Án" };
+            homeChoices.AddRange(choices);
+            homeProjectDropdown.choices = homeChoices;
+            homeProjectDropdown.SetValueWithoutNotify(
+                homeChoices.Contains(homeCurrent) ? homeCurrent : homeChoices[0]);
+        }
     }
 
     private void ChooseInspectionImage()
     {
-        ResolveDependencies();
-        var path = runtimeLoader?.SelectImageFile();
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        try
         {
-            return;
-        }
+            ResolveDependencies();
+            var selectedPath = runtimeLoader?.SelectImageFile();
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                return;
+            }
 
-        selectedInspectionImagePath = path;
-        inspectionImagePathLabel.text = Path.GetFileName(path);
-        inspectionImagePathLabel.tooltip = path;
-        inspectionFormError.text = string.Empty;
-        ShowInspectionPreview(path);
+            var path = Path.GetFullPath(selectedPath.Trim().Trim('"'));
+            if (!File.Exists(path))
+            {
+                inspectionFormError.text = "Không tìm thấy ảnh hiện trường đã chọn.";
+                return;
+            }
+
+            selectedInspectionImagePath = path;
+            inspectionImagePathLabel.text = Path.GetFileName(path);
+            inspectionImagePathLabel.tooltip = path;
+            inspectionFormError.text = string.Empty;
+            ShowInspectionPreview(path);
+        }
+        catch (Exception exception)
+        {
+            inspectionFormError.text = $"Không thể mở ảnh đã chọn: {exception.Message}";
+            Debug.LogException(exception);
+        }
     }
 
     private void ShowInspectionPreview(string path)
@@ -1009,21 +1296,34 @@ public sealed partial class IfcOperationsDashboard
             Destroy(inspectionPreviewTexture);
         }
 
-        inspectionPreviewTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+        try
         {
-            name = "Field inspection preview"
-        };
-        if (!inspectionPreviewTexture.LoadImage(File.ReadAllBytes(path)))
-        {
-            Destroy(inspectionPreviewTexture);
-            inspectionPreviewTexture = null;
-            inspectionFormError.text = "Không thể đọc ảnh hiện trường đã chọn.";
-            return;
-        }
+            inspectionPreviewTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+            {
+                name = "Field inspection preview"
+            };
+            if (!inspectionPreviewTexture.LoadImage(File.ReadAllBytes(path)))
+            {
+                Destroy(inspectionPreviewTexture);
+                inspectionPreviewTexture = null;
+                inspectionFormError.text = "Không thể đọc ảnh hiện trường đã chọn.";
+                return;
+            }
 
-        inspectionImagePreview.style.backgroundImage =
-            new StyleBackground(inspectionPreviewTexture);
-        inspectionImagePlaceholder.style.display = DisplayStyle.None;
+            inspectionImagePreview.style.backgroundImage =
+                new StyleBackground(inspectionPreviewTexture);
+            inspectionImagePlaceholder.style.display = DisplayStyle.None;
+        }
+        catch (Exception exception)
+        {
+            if (inspectionPreviewTexture != null)
+            {
+                Destroy(inspectionPreviewTexture);
+                inspectionPreviewTexture = null;
+            }
+
+            inspectionFormError.text = $"Không thể đọc ảnh hiện trường: {exception.Message}";
+        }
     }
 
     private void UseSelectedElement()
@@ -1037,6 +1337,8 @@ public sealed partial class IfcOperationsDashboard
 
         inspectionLinkedRecord = selectedRecord;
         inspectionNameInput.SetValueWithoutNotify(selectedRecord.Name);
+        inspectionElementTypeInput.SetValueWithoutNotify(
+            EmptyFallback(selectedRecord.IfcType, "Cấu kiện IFC"));
         inspectionLatitudeInput.SetValueWithoutNotify(
             selectedRecord.Latitude.ToString("F8", CultureInfo.InvariantCulture));
         inspectionLongitudeInput.SetValueWithoutNotify(
@@ -1089,44 +1391,60 @@ public sealed partial class IfcOperationsDashboard
 
         try
         {
-            var imagePath = string.IsNullOrWhiteSpace(selectedInspectionImagePath)
-                ? string.Empty
-                : PersistInspectionImage(selectedInspectionImagePath);
+            var existing = editingInspection;
+            var hasNewImage = !string.IsNullOrWhiteSpace(selectedInspectionImagePath);
+            var imagePath = hasNewImage
+                ? PersistInspectionImage(selectedInspectionImagePath)
+                : existing?.ImagePath ?? string.Empty;
+            var isResolved = existing?.IsResolved ?? false;
             var record = new FieldInspectionRecord(
-                0,
+                existing?.Id ?? 0,
                 inspectionProjectDropdown.value,
-                inspectionLinkedRecord?.SourceFile ?? string.Empty,
+                inspectionLinkedRecord?.SourceFile ?? existing?.SourceFile ?? string.Empty,
                 inspectionLinkedRecord != null
                     ? GetElementKey(inspectionLinkedRecord.Metadata)
-                    : string.Empty,
+                    : existing?.ElementKey ?? string.Empty,
                 name,
+                inspectionElementTypeInput.value?.Trim(),
+                inspectionCreatedByInput.value?.Trim(),
                 latitude,
                 longitude,
                 elevation,
                 imagePath,
                 inspectionNoteInput.value?.Trim(),
-                string.Empty,
-                inspectionStatusDropdown.index == 1);
-            if (operationsDatabase == null ||
-                !operationsDatabase.SaveFieldInspection(record, out _))
+                existing?.CreatedAt ?? string.Empty,
+                isResolved,
+                isResolved ? existing?.ResolvedAt ?? string.Empty : string.Empty);
+            var saved = operationsDatabase != null && (existing.HasValue
+                ? operationsDatabase.UpdateFieldInspection(record)
+                : operationsDatabase.SaveFieldInspection(record, out _));
+            if (!saved)
             {
+                if (hasNewImage)
+                {
+                    DeletePersistedInspectionImage(imagePath);
+                }
+
                 inspectionFormError.text =
                     "Không thể lưu ghi nhận hiện trường vào SQLite.";
                 return;
             }
 
+            if (hasNewImage && existing.HasValue &&
+                !string.Equals(
+                    existing.Value.ImagePath,
+                    imagePath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                DeletePersistedInspectionImage(existing.Value.ImagePath);
+            }
+
             CloseInspectionDialog();
             ResetInspectionForm();
-            LoadInspectionsFromDatabase();
-            BuildFieldHistory();
-            BuildInspectionPopup();
-            BuildInspectionMarkers();
-            if (selectedRecord != null)
-            {
-                BuildElementInspectionHistory(selectedRecord);
-            }
-            UpdateModuleCounts();
-            SetImportStatus("Đã lưu ghi nhận hiện trường và đồng bộ điểm lên báo cáo.");
+            RefreshInspectionViews();
+            SetImportStatus(existing.HasValue
+                ? "Đã cập nhật ghi nhận hiện trường và đồng bộ điểm lên báo cáo."
+                : "Đã lưu ghi nhận hiện trường và đồng bộ điểm lên báo cáo.");
         }
         catch (Exception exception)
         {
@@ -1163,6 +1481,111 @@ public sealed partial class IfcOperationsDashboard
         return destination;
     }
 
+    private static void DeletePersistedInspectionImage(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var imageDirectory = Path.GetFullPath(Path.Combine(
+                Application.persistentDataPath,
+                "IfcOperations",
+                "InspectionImages"));
+            var fullPath = Path.GetFullPath(imagePath);
+            var directoryPrefix = imageDirectory.TrimEnd(
+                                      Path.DirectorySeparatorChar,
+                                      Path.AltDirectorySeparatorChar) +
+                                  Path.DirectorySeparatorChar;
+            if (fullPath.StartsWith(directoryPrefix, StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"Could not remove field inspection image: {exception.Message}");
+        }
+    }
+
+    private void RefreshInspectionViews()
+    {
+        LoadInspectionsFromDatabase();
+        BuildFieldHistory();
+        BuildInspectionPopup();
+        BuildInspectionMarkers();
+        if (selectedRecord != null)
+        {
+            BuildElementInspectionHistory(selectedRecord);
+        }
+
+        UpdateModuleCounts();
+    }
+
+    private void OpenRegistryModelInReport(IfcModelRegistryRecord record)
+    {
+        if (!record.IsEnabled)
+        {
+            SetRegistryModelEnabled(record, true);
+        }
+        else
+        {
+            var availablePath = EnsureRegistryModelAvailable(record);
+            if (!string.IsNullOrWhiteSpace(availablePath) && !IsModelLoaded(availablePath))
+            {
+                StartCoroutine(LoadRegisteredPath(availablePath));
+            }
+        }
+
+        ShowModule(DashboardModule.Report);
+        SetImportStatus($"Đang mở mô hình {Path.GetFileName(record.IfcPath)} trong không gian 3D.");
+    }
+
+    private void ExportRegistryModel(IfcModelRegistryRecord record)
+    {
+        var fileName = string.IsNullOrWhiteSpace(record.StoredFileName)
+            ? Path.GetFileName(record.IfcPath)
+            : record.StoredFileName;
+        if (!RuntimeSaveFileDialog.TryGetSavePath(
+                "Tải file IFC",
+                fileName,
+                "ifc",
+                "IFC files",
+                out var destination))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(record.IfcPath))
+            {
+                if (!string.Equals(
+                        Path.GetFullPath(record.IfcPath),
+                        Path.GetFullPath(destination),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Copy(record.IfcPath, destination, true);
+                }
+            }
+            else if (operationsDatabase == null ||
+                     !operationsDatabase.RestoreIfcFile(record.Id, destination))
+            {
+                SetImportStatus("Không thể tải file IFC từ kho dữ liệu.");
+                return;
+            }
+
+            SetImportStatus($"Đã tải file IFC: {Path.GetFileName(destination)}");
+        }
+        catch (Exception exception)
+        {
+            SetImportStatus($"Không thể tải file IFC: {exception.Message}");
+        }
+    }
+
     private void BuildFieldHistory()
     {
         if (fieldHistoryList == null)
@@ -1186,13 +1609,12 @@ public sealed partial class IfcOperationsDashboard
             row.AddToClassList("field-table-row");
             row.Add(CreateFieldTableLabel((index + 1).ToString(), "field-table-index"));
 
-            var status = new Button(() =>
-                SetInspectionResolved(inspection, !inspection.IsResolved))
+            var status = new Label
             {
                 text = inspection.IsResolved ? "Đã xử lý" : "Chưa xử lý",
                 tooltip = inspection.IsResolved
-                    ? "Đánh dấu lại là chưa xử lý"
-                    : "Đánh dấu sự cố đã xử lý"
+                    ? "Đã được xác nhận khi xuất báo cáo vận hành"
+                    : "Sẽ tự động hoàn tất khi xuất báo cáo vận hành"
             };
             status.AddToClassList("field-table-cell");
             status.AddToClassList("field-table-status");
@@ -1213,9 +1635,83 @@ public sealed partial class IfcOperationsDashboard
             row.Add(CreateFieldTableLabel(
                 $"{inspection.Latitude:F6}, {inspection.Longitude:F6}\n{inspection.Elevation:F1} m",
                 "field-table-coordinate"));
+            row.Add(CreateFieldInspectionActions(inspection));
 
             fieldHistoryList.Add(row);
         }
+    }
+
+    private VisualElement CreateFieldInspectionActions(FieldInspectionRecord inspection)
+    {
+        var actions = new VisualElement();
+        actions.AddToClassList("field-table-cell");
+        actions.AddToClassList("field-table-actions");
+
+        var editButton = new Button(() => OpenInspectionEditor(inspection))
+        {
+            text = "Sửa",
+            tooltip = "Cập nhật ghi nhận hiện trường"
+        };
+        editButton.AddToClassList("field-table-action-button");
+        actions.Add(editButton);
+
+        var deleteArmed = false;
+        var deleteButton = new Button
+        {
+            text = "Xóa",
+            tooltip = "Xóa ghi nhận hiện trường"
+        };
+        deleteButton.clicked += () =>
+        {
+            if (!deleteArmed)
+            {
+                deleteArmed = true;
+                deleteButton.text = "Xác nhận";
+                deleteButton.AddToClassList("field-table-delete-confirm");
+                deleteButton.schedule.Execute(() =>
+                {
+                    deleteArmed = false;
+                    deleteButton.text = "Xóa";
+                    deleteButton.RemoveFromClassList("field-table-delete-confirm");
+                }).StartingIn(3500);
+                return;
+            }
+
+            DeleteInspection(inspection);
+        };
+        deleteButton.AddToClassList("field-table-action-button");
+        deleteButton.AddToClassList("field-table-delete-button");
+        actions.Add(deleteButton);
+        return actions;
+    }
+
+    private void DeleteInspection(FieldInspectionRecord inspection)
+    {
+        if (operationsDatabase == null ||
+            !operationsDatabase.DeleteFieldInspection(inspection.Id))
+        {
+            SetImportStatus("Không thể xóa ghi nhận hiện trường khỏi SQLite.");
+            return;
+        }
+
+        DeletePersistedInspectionImage(inspection.ImagePath);
+        if (displayedInspectionId == inspection.Id)
+        {
+            CloseInspectionDetails();
+        }
+
+        if (editingInspection?.Id == inspection.Id)
+        {
+            CloseInspectionDialog();
+            ResetInspectionForm();
+        }
+
+        RefreshInspectionViews();
+        if (activeModule == DashboardModule.Dashboard)
+        {
+            PopulateAnalyticsDashboard();
+        }
+        SetImportStatus($"Đã xóa ghi nhận hiện trường: {inspection.ElementName}.");
     }
 
     private static Label CreateFieldTableLabel(string text, string className)
@@ -1224,30 +1720,6 @@ public sealed partial class IfcOperationsDashboard
         label.AddToClassList("field-table-cell");
         label.AddToClassList(className);
         return label;
-    }
-
-    private void SetInspectionResolved(FieldInspectionRecord inspection, bool resolved)
-    {
-        if (operationsDatabase == null ||
-            !operationsDatabase.SetFieldInspectionResolved(inspection.Id, resolved))
-        {
-            SetImportStatus("Không thể cập nhật tình trạng xử lý trong SQLite.");
-            return;
-        }
-
-        LoadInspectionsFromDatabase();
-        BuildFieldHistory();
-        BuildInspectionPopup();
-        BuildInspectionMarkers();
-        if (selectedRecord != null)
-        {
-            BuildElementInspectionHistory(selectedRecord);
-        }
-
-        UpdateModuleCounts();
-        SetImportStatus(resolved
-            ? "Đã đánh dấu ghi nhận là đã xử lý."
-            : "Đã chuyển ghi nhận về trạng thái chưa xử lý.");
     }
 
     private static string FormatInspectionTime(string value)
@@ -1415,6 +1887,9 @@ public sealed partial class IfcOperationsDashboard
                     viewingCamera,
                     inspection.ElementName,
                     inspection.IsResolved);
+                marker.SetElementStatus(
+                    asset.State.Status,
+                    asset.State.HasUserUpdate);
             }
             else
             {
@@ -1498,6 +1973,9 @@ public sealed partial class IfcOperationsDashboard
                 }
 
                 marker.AssignLinkedElement(record.Metadata);
+                marker.SetElementStatus(
+                    record.State.Status,
+                    record.State.HasUserUpdate);
                 if ((!SourceFileMatches(record.SourceFile, inspection.SourceFile) ||
                      !ElementKeyMatches(record.Metadata, inspection.ElementKey)) &&
                     operationsDatabase != null &&
@@ -1620,16 +2098,20 @@ public sealed partial class IfcOperationsDashboard
         {
             var item = new VisualElement();
             item.AddToClassList("element-inspection-item");
+            item.tooltip = "Nhấn để xem đầy đủ ảnh và thông tin kiểm tra";
+            item.RegisterCallback<ClickEvent>(_ => OpenInspectionDetails(inspection));
 
             var heading = new VisualElement();
             heading.AddToClassList("element-inspection-item-heading");
             var time = new Label(FormatInspectionTime(inspection.CreatedAt));
             time.AddToClassList("element-inspection-time");
-            var status = new Button(() =>
-                SetInspectionResolved(inspection, !inspection.IsResolved))
+            var status = new Label
             {
                 text = inspection.IsResolved ? "Đã xử lý" : "Chưa xử lý"
             };
+            status.tooltip = inspection.IsResolved
+                ? "Đã được xác nhận khi xuất báo cáo vận hành"
+                : "Sẽ tự động hoàn tất khi xuất báo cáo vận hành";
             status.AddToClassList("element-inspection-status");
             status.AddToClassList(inspection.IsResolved
                 ? "element-inspection-status-resolved"
@@ -1652,20 +2134,214 @@ public sealed partial class IfcOperationsDashboard
                 $"{inspection.Latitude:F6}, {inspection.Longitude:F6} • {inspection.Elevation:F1} m");
             location.AddToClassList("element-inspection-location");
             item.Add(location);
-            if (!string.IsNullOrWhiteSpace(inspection.ImagePath) &&
-                File.Exists(inspection.ImagePath))
-            {
-                var imageButton = new Button(() =>
-                    Application.OpenURL(new Uri(inspection.ImagePath).AbsoluteUri))
-                {
-                    text = "Mở ảnh hiện trường"
-                };
-                imageButton.AddToClassList("element-inspection-image-button");
-                item.Add(imageButton);
-            }
+
+            var detailCommand = new Label(
+                string.IsNullOrWhiteSpace(inspection.ImagePath)
+                    ? "Xem chi tiết"
+                    : "Xem ảnh và chi tiết");
+            detailCommand.AddToClassList("element-inspection-image-button");
+            item.Add(detailCommand);
 
             elementInspectionList.Add(item);
         }
+    }
+
+    private void OpenInspectionEditor(FieldInspectionRecord inspection)
+    {
+        ResetInspectionForm();
+        UpdateInspectionProjectChoices();
+        editingInspection = inspection;
+        inspectionLinkedRecord = FindAssetForInspection(inspection);
+        inspectionFormTitle.text = "Cập Nhật Ghi Nhận Hiện Trường";
+        submitInspectionButton.text = "Lưu Thay Đổi";
+
+        if (!string.IsNullOrWhiteSpace(inspection.ProjectName) &&
+            !inspectionProjectDropdown.choices.Contains(inspection.ProjectName))
+        {
+            var choices = new List<string>(inspectionProjectDropdown.choices)
+            {
+                inspection.ProjectName
+            };
+            inspectionProjectDropdown.choices = choices;
+        }
+
+        inspectionProjectDropdown.SetValueWithoutNotify(inspection.ProjectName);
+        inspectionStatusDropdown.index = inspection.IsResolved ? 1 : 0;
+        inspectionNameInput.SetValueWithoutNotify(inspection.ElementName);
+        inspectionElementTypeInput.SetValueWithoutNotify(inspection.ElementType);
+        inspectionCreatedByInput.SetValueWithoutNotify(inspection.CreatedBy);
+        inspectionLatitudeInput.SetValueWithoutNotify(
+            inspection.Latitude.ToString("F8", CultureInfo.InvariantCulture));
+        inspectionLongitudeInput.SetValueWithoutNotify(
+            inspection.Longitude.ToString("F8", CultureInfo.InvariantCulture));
+        inspectionElevationInput.SetValueWithoutNotify(
+            inspection.Elevation.ToString("F2", CultureInfo.InvariantCulture));
+        inspectionNoteInput.SetValueWithoutNotify(inspection.Note);
+
+        if (!string.IsNullOrWhiteSpace(inspection.ImagePath) &&
+            File.Exists(inspection.ImagePath))
+        {
+            inspectionImagePathLabel.text = Path.GetFileName(inspection.ImagePath);
+            inspectionImagePathLabel.tooltip = inspection.ImagePath;
+            ShowInspectionPreview(inspection.ImagePath);
+        }
+
+        inspectionFormOverlay.style.display = DisplayStyle.Flex;
+        inspectionFormOverlay.BringToFront();
+    }
+
+    private void OpenInspectionDetails(FieldInspectionRecord inspection)
+    {
+        if (inspectionDetailOverlay == null)
+        {
+            return;
+        }
+
+        displayedInspectionId = inspection.Id;
+        displayedInspection = inspection;
+        inspectionDetailCreatedAt.text =
+            $"Ghi nhận lúc {FormatInspectionTime(inspection.CreatedAt)}";
+        inspectionDetailStatus.text = inspection.IsResolved
+            ? "Đã xử lý"
+            : "Chưa xử lý";
+        inspectionDetailStatus.EnableInClassList(
+            "inspection-detail-status-resolved",
+            inspection.IsResolved);
+        inspectionDetailName.text = EmptyFallback(
+            inspection.ElementName,
+            "Ghi nhận hiện trường");
+        var linkedAsset = FindAssetForInspection(inspection);
+        inspectionDetailType.text = EmptyFallback(
+            inspection.ElementType,
+            linkedAsset?.IfcType ?? "Cấu kiện IFC");
+        inspectionDetailCreator.text = EmptyFallback(
+            inspection.CreatedBy,
+            "Người dùng hiện trường");
+        inspectionDetailProject.text = EmptyFallback(inspection.ProjectName);
+
+        var sourceName = string.IsNullOrWhiteSpace(inspection.SourceFile)
+            ? "Chưa liên kết mô hình"
+            : Path.GetFileNameWithoutExtension(inspection.SourceFile);
+        inspectionDetailElement.text = string.IsNullOrWhiteSpace(inspection.ElementKey)
+            ? sourceName
+            : $"{sourceName}  •  #{inspection.ElementKey.TrimStart('#')}";
+        inspectionDetailCoordinate.text =
+            $"Vĩ độ: {inspection.Latitude:F6}\n" +
+            $"Kinh độ: {inspection.Longitude:F6}\n" +
+            $"Cao độ: {inspection.Elevation:F1} m";
+        inspectionDetailNote.text = EmptyFallback(
+            inspection.Note,
+            "Không có mô tả hoặc ghi chú.");
+
+        ShowInspectionDetailImage(inspection.ImagePath);
+        inspectionDetailOverlay.style.display = DisplayStyle.Flex;
+        inspectionDetailOverlay.BringToFront();
+    }
+
+    private void CloseInspectionDetails()
+    {
+        if (inspectionDetailOverlay != null)
+        {
+            inspectionDetailOverlay.style.display = DisplayStyle.None;
+        }
+
+        displayedInspectionId = 0;
+        displayedInspection = null;
+        inspectionDetailDeleteArmed = false;
+        if (inspectionDetailDeleteButton != null)
+        {
+            inspectionDetailDeleteButton.text = "Xóa";
+            inspectionDetailDeleteButton.RemoveFromClassList("inspection-detail-delete-confirm");
+        }
+        ReleaseInspectionDetailTexture();
+    }
+
+    private void OpenDisplayedInspectionOnMap()
+    {
+        if (!displayedInspection.HasValue)
+        {
+            return;
+        }
+
+        var inspection = displayedInspection.Value;
+        CloseInspectionDetails();
+        OpenInspectionInReport(inspection);
+    }
+
+    private void EditDisplayedInspection()
+    {
+        if (!displayedInspection.HasValue)
+        {
+            return;
+        }
+
+        var inspection = displayedInspection.Value;
+        CloseInspectionDetails();
+        ShowModule(DashboardModule.Field);
+        OpenInspectionEditor(inspection);
+    }
+
+    private void DeleteDisplayedInspection()
+    {
+        if (!displayedInspection.HasValue)
+        {
+            return;
+        }
+
+        if (!inspectionDetailDeleteArmed)
+        {
+            inspectionDetailDeleteArmed = true;
+            inspectionDetailDeleteButton.text = "Xác nhận xóa";
+            inspectionDetailDeleteButton.AddToClassList("inspection-detail-delete-confirm");
+            inspectionDetailDeleteButton.schedule.Execute(() =>
+            {
+                inspectionDetailDeleteArmed = false;
+                inspectionDetailDeleteButton.text = "Xóa";
+                inspectionDetailDeleteButton.RemoveFromClassList(
+                    "inspection-detail-delete-confirm");
+            }).StartingIn(3500);
+            return;
+        }
+
+        DeleteInspection(displayedInspection.Value);
+    }
+
+    private void ShowInspectionDetailImage(string imagePath)
+    {
+        ReleaseInspectionDetailTexture();
+        inspectionDetailImage.style.backgroundImage = StyleKeyword.None;
+        inspectionDetailImagePlaceholder.style.display = DisplayStyle.Flex;
+
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+        {
+            return;
+        }
+
+        var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+        {
+            name = $"Inspection detail {Path.GetFileName(imagePath)}"
+        };
+        if (!texture.LoadImage(File.ReadAllBytes(imagePath)))
+        {
+            Destroy(texture);
+            return;
+        }
+
+        inspectionDetailTexture = texture;
+        inspectionDetailImage.style.backgroundImage =
+            new StyleBackground(inspectionDetailTexture);
+        inspectionDetailImagePlaceholder.style.display = DisplayStyle.None;
+    }
+
+    private void ReleaseInspectionDetailTexture()
+    {
+        if (inspectionDetailTexture == null)
+        {
+            return;
+        }
+
+        Destroy(inspectionDetailTexture);
+        inspectionDetailTexture = null;
     }
 
     private void DestroyInspectionMarkers()
@@ -1742,6 +2418,7 @@ public sealed partial class IfcOperationsDashboard
     private void ReleaseModuleResources()
     {
         DestroyInspectionMarkers();
+        ReleaseInspectionDetailTexture();
         if (inspectionPreviewTexture != null)
         {
             Destroy(inspectionPreviewTexture);

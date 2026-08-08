@@ -4,19 +4,22 @@
         <ui:VisualElement name="home-page" class="module-page home-page hud-interactive">
             <ui:VisualElement class="module-topbar">
                 <ui:VisualElement class="brand-block">
-                    <ui:Label text="P" class="brand-mark"/>
+                    <ui:Label text="DT" class="brand-mark"/>
                     <ui:VisualElement class="brand-copy">
-                        <ui:Label text="BIM-GIS InfraOps" class="brand-title"/>
-                        <ui:Label text="Trung Tâm Quản Lý Hạ Tầng Giao Thông" class="brand-subtitle"/>
+                        <ui:Label text="DIGITALTWIN3D.VN" class="brand-title"/>
+                        <ui:Label text="HỆ THỐNG QUẢN LÝ BIM &amp; HẠ TẦNG CẤU KIỆN" class="brand-subtitle"/>
                     </ui:VisualElement>
                 </ui:VisualElement>
-                <ui:Label text="HỆ THỐNG VẬN HÀNH TÍCH HỢP" class="home-system-label"/>
+                <ui:VisualElement class="home-menu-actions">
+                    <ui:DropdownField name="home-project-dropdown" value="Tất Cả Dự Án" class="home-project-dropdown"/>
+                    <ui:Button name="home-login-button" text="Đăng nhập" class="home-login-button"/>
+                </ui:VisualElement>
             </ui:VisualElement>
             <ui:VisualElement class="home-content">
                 <ui:VisualElement class="home-heading-row">
-                    <ui:VisualElement>
-                        <ui:Label text="Trang Tổng" class="home-title"/>
-                        <ui:Label text="Chọn khu vực nghiệp vụ để bắt đầu làm việc." class="home-subtitle"/>
+                    <ui:VisualElement class="home-hero-copy">
+                        <ui:Label text="HỆ THỐNG QUẢN LÝ BIM &amp; VẬN HÀNH HẠ TẦNG CẤU KIỆN" class="home-title"/>
+                        <ui:Label text="Tích hợp toàn diện cơ sở dữ liệu tệp IFC, nhật ký thu thập hiện trường di động và mô hình 3D không gian." class="home-subtitle"/>
                     </ui:VisualElement>
                     <ui:VisualElement class="home-summary-strip">
                         <ui:VisualElement class="home-summary-item">
@@ -33,24 +36,30 @@
                         </ui:VisualElement>
                     </ui:VisualElement>
                 </ui:VisualElement>
-                <ui:VisualElement class="module-nav-grid" style="align-self: auto; align-content: flex-start; flex-wrap: wrap; flex-direction: row; margin-top: 100px;">
-                    <ui:Button name="home-data-button" class="module-nav-card module-nav-data" style="margin-right: 32px;">
-                        <ui:Label text="01" class="module-card-index"/>
-                        <ui:Label text="Quản Lý Dữ Liệu" class="module-card-title"/>
-                        <ui:Label text="Đăng ký, lọc và quản lý nguồn mô hình IFC theo dự án, địa phương và đơn vị." class="module-card-copy"/>
-                        <ui:Label text="MỞ KHO DỮ LIỆU  →" class="module-card-command"/>
+                <ui:VisualElement class="module-nav-grid">
+                    <ui:Button name="home-data-button" class="module-nav-card module-nav-data" style="height: 227px;">
+                        <ui:Label text="▤" class="module-card-index module-card-icon" style="padding-right: 1px;"/>
+                        <ui:Label text="Quản lý Cơ sở dữ liệu" class="module-card-title"/>
+                        <ui:Label text="Quản lý CSDL các tập tệp mô hình IFC, dự án, đơn vị thi công và chỉnh sửa thông tin dữ liệu." class="module-card-copy"/>
+                        <ui:Label text="Truy cập CSDL IFC  →" class="module-card-command" style="border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; border-bottom-left-radius: 5px;"/>
                     </ui:Button>
-                    <ui:Button name="home-field-button" class="module-nav-card module-nav-field" style="margin-right: 32px;">
-                        <ui:Label text="02" class="module-card-index"/>
-                        <ui:Label text="Quản Lý Hiện Trường" class="module-card-title"/>
-                        <ui:Label text="Ghi nhận hình ảnh, tọa độ và tình trạng hư hỏng từ hoạt động kiểm tra thực địa." class="module-card-copy"/>
-                        <ui:Label text="TẠO GHI NHẬN  →" class="module-card-command"/>
+                    <ui:Button name="home-report-button" class="module-nav-card module-nav-report" style="height: 227px;">
+                        <ui:Label text="3D" class="module-card-index module-card-icon"/>
+                        <ui:Label text="Quản lý Báo cáo Vận hành BIM Kết cấu" class="module-card-title"/>
+                        <ui:Label text="Xem mô hình 3D, quản lý trạng thái cấu kiện và báo cáo vận hành kết cấu công trình." class="module-card-copy" style="height: 47px; margin-top: 2px;"/>
+                        <ui:Label text="Mở Giao diện 3D  →" class="module-card-command" style="border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; border-bottom-left-radius: 5px;"/>
                     </ui:Button>
-                    <ui:Button name="home-report-button" class="module-nav-card module-nav-report">
-                        <ui:Label text="03" class="module-card-index"/>
-                        <ui:Label text="Quản Lý Báo Cáo Hạ Tầng" class="module-card-title"/>
-                        <ui:Label text="Theo dõi mô hình trên ArcGIS, vận hành cấu kiện, đo đạc và xuất báo cáo." class="module-card-copy"/>
-                        <ui:Label text="MỞ KHÔNG GIAN BÁO CÁO  →" class="module-card-command"/>
+                    <ui:Button name="home-field-button" class="module-nav-card module-nav-field" style="height: 227px;">
+                        <ui:Label text="▣" class="module-card-index module-card-icon" style="-unity-text-align: middle-center; white-space: normal; padding-right: 1px;"/>
+                        <ui:Label text="Báo cáo Hiện trường" class="module-card-title"/>
+                        <ui:Label text="Thu thập ảnh và GPS tại hiện trường, lưu dữ liệu kiểm tra và đồng bộ lên hệ thống." class="module-card-copy"/>
+                        <ui:Label text="Mở Báo cáo Hiện trường  →" class="module-card-command" style="border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; border-bottom-left-radius: 5px;"/>
+                    </ui:Button>
+                    <ui:Button name="home-dashboard-button" class="module-nav-card module-nav-dashboard" style="height: 227px;">
+                        <ui:Label text="▥" class="module-card-index module-card-icon" style="padding-right: 1px;"/>
+                        <ui:Label text="Dashboard Vận Hành" class="module-card-title"/>
+                        <ui:Label text="Báo cáo tổng hợp trạng thái vận hành và bảo trì toàn bộ cấu kiện dự án theo thời gian thực." class="module-card-copy"/>
+                        <ui:Label text="Xem Dashboard  →" class="module-card-command" style="border-top-left-radius: 5px; border-top-right-radius: 5px; border-bottom-right-radius: 5px; border-bottom-left-radius: 5px;"/>
                     </ui:Button>
                 </ui:VisualElement>
             </ui:VisualElement>
@@ -77,14 +86,14 @@
                 </ui:VisualElement>
                 <ui:VisualElement class="data-table-shell">
                     <ui:VisualElement class="data-table-header">
-                        <ui:Label text="STT" class="data-cell data-cell-index"/>
-                        <ui:Label text="Dự án" class="data-cell data-cell-project"/>
-                        <ui:Label text="Tỉnh / Thành phố" class="data-cell data-cell-place"/>
-                        <ui:Label text="Xã / Phường" class="data-cell data-cell-place"/>
-                        <ui:Label text="Đơn vị" class="data-cell data-cell-unit"/>
-                        <ui:Label text="File IFC" class="data-cell data-cell-file"/>
-                        <ui:Label text="Báo cáo" class="data-cell data-cell-state"/>
-                        <ui:Label text="" class="data-cell data-cell-action"/>
+                        <ui:Label text="Tên Tệp IFC" class="data-cell data-cell-file"/>
+                        <ui:Label text="Dự Án" class="data-cell data-cell-project"/>
+                        <ui:Label text="Địa Điểm" class="data-cell data-cell-location"/>
+                        <ui:Label text="Đơn Vị Thi Công" class="data-cell data-cell-unit"/>
+                        <ui:Label text="Ngày Tải" class="data-cell data-cell-date"/>
+                        <ui:Label text="Dung Lượng" class="data-cell data-cell-size"/>
+                        <ui:Label text="Trạng Thái" class="data-cell data-cell-state"/>
+                        <ui:Label text="Thao Tác" class="data-cell data-cell-action"/>
                     </ui:VisualElement>
                     <ui:ScrollView name="registry-scroll" mode="Vertical" class="data-table-scroll">
                         <ui:VisualElement name="registry-list" class="data-table-body"/>
@@ -95,7 +104,7 @@
                 <ui:VisualElement class="model-upload-dialog modal-surface">
                     <ui:VisualElement class="module-modal-heading">
                         <ui:VisualElement>
-                            <ui:Label text="Thêm Mô Hình IFC" class="modal-title"/>
+                            <ui:Label name="model-upload-title" text="Thêm Mô Hình IFC" class="modal-title"/>
                             <ui:Label text="Bổ sung nguồn dữ liệu mới vào hệ thống." class="module-modal-subtitle"/>
                         </ui:VisualElement>
                         <ui:Button name="close-model-upload-button" text="×" class="icon-button"/>
@@ -145,6 +154,7 @@
                         <ui:Label text="Cấu kiện IFC" class="field-table-cell field-table-element"/>
                         <ui:Label text="Thời gian" class="field-table-cell field-table-time"/>
                         <ui:Label text="Tọa độ" class="field-table-cell field-table-coordinate"/>
+                        <ui:Label text="Thao tác" class="field-table-cell field-table-actions"/>
                     </ui:VisualElement>
                     <ui:ScrollView name="field-history-scroll" mode="Vertical" class="field-history-scroll">
                         <ui:VisualElement name="field-history-list" class="field-history-list"/>
@@ -155,7 +165,7 @@
                 <ui:VisualElement class="inspection-form-dialog modal-surface">
                     <ui:VisualElement class="module-modal-heading">
                         <ui:VisualElement>
-                            <ui:Label text="Tạo Ghi Nhận Hiện Trường" class="modal-title"/>
+                            <ui:Label name="inspection-form-title" text="Tạo Ghi Nhận Hiện Trường" class="modal-title"/>
                             <ui:Label text="Ảnh, tình trạng và tọa độ sẽ được đồng bộ với cấu kiện IFC và ArcGIS." class="module-modal-subtitle"/>
                         </ui:VisualElement>
                         <ui:Button name="close-inspection-form-button" text="×" class="icon-button"/>
@@ -182,10 +192,17 @@
                                 <ui:Button name="use-selected-element-button" text="Dùng cấu kiện đang chọn" class="field-inline-button"/>
                             </ui:VisualElement>
                             <ui:VisualElement class="inspection-select-row">
-                                <ui:DropdownField name="inspection-project-dropdown" label="Dự án" class="module-field inspection-select-field"/>
-                                <ui:DropdownField name="inspection-status-dropdown" label="Tình trạng xử lý" class="module-field inspection-select-field inspection-select-field-last"/>
+                                <ui:DropdownField name="inspection-project-dropdown" label="Dự án" class="module-field inspection-select-field inspection-project-field"/>
                             </ui:VisualElement>
                             <ui:TextField name="inspection-name-input" label="Tên sự cố / nội dung kiểm tra *" class="module-field"/>
+                            <ui:VisualElement class="inspection-processing-row">
+                                <ui:DropdownField name="inspection-status-dropdown" label="Tình trạng xử lý" class="module-field inspection-processing-field"/>
+                                <ui:Label text="Tự động chuyển thành Đã xử lý sau khi xuất báo cáo vận hành." class="inspection-processing-hint"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-select-row inspection-meta-row">
+                                <ui:TextField name="inspection-element-type-input" label="Loại cấu kiện" class="module-field inspection-select-field"/>
+                                <ui:TextField name="inspection-created-by-input" label="Người tạo" class="module-field inspection-select-field inspection-select-field-last"/>
+                            </ui:VisualElement>
                             <ui:VisualElement class="coordinate-row">
                                 <ui:TextField name="inspection-latitude-input" label="Vĩ độ" class="module-field coordinate-field"/>
                                 <ui:TextField name="inspection-longitude-input" label="Kinh độ" class="module-field coordinate-field coordinate-field-middle"/>
@@ -334,6 +351,60 @@
                     </ui:VisualElement>
                 </ui:VisualElement>
             </ui:VisualElement>
+            <ui:VisualElement name="inspection-detail-overlay" class="modal-overlay hud-interactive">
+                <ui:VisualElement class="inspection-detail-dialog modal-surface">
+                    <ui:VisualElement class="inspection-detail-heading">
+                        <ui:VisualElement>
+                            <ui:Label text="Chi Tiết Kiểm Tra Kỹ Thuật" class="modal-title"/>
+                            <ui:Label name="inspection-detail-created-at" text="-" class="module-modal-subtitle"/>
+                        </ui:VisualElement>
+                        <ui:Button name="close-inspection-detail-button" text="×" tooltip="Đóng chi tiết kiểm tra" class="icon-button"/>
+                    </ui:VisualElement>
+                    <ui:VisualElement class="inspection-detail-body">
+                        <ui:VisualElement class="inspection-detail-photo-panel">
+                            <ui:VisualElement name="inspection-detail-image" class="inspection-detail-image">
+                                <ui:VisualElement name="inspection-detail-image-placeholder" class="inspection-detail-image-placeholder">
+                                    <ui:Label text="ẢNH" class="image-placeholder-mark"/>
+                                    <ui:Label text="Ghi nhận chưa có ảnh" class="image-placeholder-title"/>
+                                </ui:VisualElement>
+                            </ui:VisualElement>
+                        </ui:VisualElement>
+                        <ui:ScrollView mode="Vertical" class="inspection-detail-properties">
+                            <ui:Label name="inspection-detail-status" text="Chưa xử lý" class="inspection-detail-status"/>
+                            <ui:Label name="inspection-detail-name" text="-" class="inspection-detail-name"/>
+                            <ui:VisualElement class="inspection-detail-property">
+                                <ui:Label text="Loại cấu kiện" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-type" text="-" class="inspection-detail-property-value"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-property">
+                                <ui:Label text="Dự án" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-project" text="-" class="inspection-detail-property-value"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-property">
+                                <ui:Label text="Cấu kiện IFC" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-element" text="-" class="inspection-detail-property-value"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-property">
+                                <ui:Label text="Tọa độ" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-coordinate" text="-" class="inspection-detail-property-value"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-property inspection-detail-note-property">
+                                <ui:Label text="Mô tả / ghi chú" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-note" text="-" class="inspection-detail-property-value inspection-detail-note"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-property">
+                                <ui:Label text="Người tạo" class="inspection-detail-property-label"/>
+                                <ui:Label name="inspection-detail-creator" text="-" class="inspection-detail-property-value"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement class="inspection-detail-actions">
+                                <ui:Button name="inspection-detail-map-button" text="Xem trên bản đồ 3D" class="inspection-detail-action inspection-detail-map-action"/>
+                                <ui:Button name="inspection-detail-edit-button" text="Sửa" class="inspection-detail-action"/>
+                                <ui:Button name="inspection-detail-delete-button" text="Xóa" class="inspection-detail-action inspection-detail-delete-action"/>
+                            </ui:VisualElement>
+                        </ui:ScrollView>
+                    </ui:VisualElement>
+                </ui:VisualElement>
+            </ui:VisualElement>
             <ui:VisualElement name="analytics-overlay" class="analytics-overlay hud-interactive">
                 <ui:VisualElement class="analytics-shell">
                     <ui:VisualElement class="analytics-header">
@@ -389,6 +460,13 @@
                                 <ui:Label name="analytics-model-count" text="0 mô hình" class="analytics-model-count"/>
                             </ui:VisualElement>
                             <ui:VisualElement name="analytics-source-chart" class="analytics-source-chart"/>
+                        </ui:VisualElement>
+                        <ui:VisualElement class="analytics-panel analytics-recent-panel">
+                            <ui:VisualElement class="analytics-panel-heading-row">
+                                <ui:Label text="Báo Cáo Hiện Trường Gần Đây" class="analytics-panel-title"/>
+                                <ui:Label text="Ghi nhận mới nhất" class="analytics-recent-meta"/>
+                            </ui:VisualElement>
+                            <ui:VisualElement name="analytics-recent-inspections" class="analytics-recent-inspections"/>
                         </ui:VisualElement>
                     </ui:ScrollView>
                 </ui:VisualElement>
