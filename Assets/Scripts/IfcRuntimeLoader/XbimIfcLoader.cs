@@ -14,7 +14,8 @@ using Debug = UnityEngine.Debug;
 public sealed class XbimIfcLoader : MonoBehaviour
 {
     private const uint MeshFileMagic = 0x4D494258;
-    private const int RawMeshFileVersion = 2;
+    private const int LegacyRawMeshFileVersion = 2;
+    private const int RawMeshFileVersion = 4;
     private const int OptimizedMeshFileVersion = 3;
     private const int BinaryItemsPerYield = 16_384;
     private const int OptimizationRevision = 2;
@@ -76,6 +77,30 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [Tooltip("Maximum time allowed for one native xBIM conversion.")]
     [Min(30f)]
     [SerializeField] private float converterTimeoutSeconds = 900f;
+
+    [Header("Spatial Streaming")]
+    [Tooltip("Geometry is fragmented into persistent metre-sized cells during xBIM conversion.")]
+    [SerializeField, Min(1f)] private float streamingCellSizeMetres = 100f;
+    [Tooltip("Hard upper bound for one independently streamable fragment.")]
+    [SerializeField, Min(1_000)] private int maximumTrianglesPerFragment = 100_000;
+    [Tooltip("Only cells in the camera frustum within this distance become resident.")]
+    [SerializeField, Min(1f)] private float streamingLoadDistanceMetres = 750f;
+    [SerializeField, Min(1f)] private float streamingUnloadDistanceMetres = 1_000f;
+    [Tooltip("Keeps recently visible cells resident briefly to avoid churn while turning the camera.")]
+    [SerializeField, Min(0f)] private float invisibleCellRetentionSeconds = 4f;
+    [SerializeField, Min(0.05f)] private float streamingEvaluationInterval = 0.25f;
+
+    [Header("Global IFC Residency Budget")]
+    [Tooltip("Shared by every loaded IFC model, not a per-model allowance.")]
+    [SerializeField, Min(100_000)] private long maximumResidentTriangles = 4_000_000;
+    [Tooltip("Estimated combined CPU/GPU mesh buffer allowance shared by all IFC models.")]
+    [SerializeField, Min(64)] private int maximumResidentMeshMemoryMegabytes = 768;
+    [SerializeField, Min(1)] private int maximumResidentRenderers = 3_000;
+    [SerializeField, Min(1)] private int maximumMeshLoadsPerFrame = 2;
+
+    [Header("Streaming Diagnostics")]
+    [SerializeField] private bool enableStreamingDiagnostics = true;
+    [SerializeField, Min(1f)] private float streamingDiagnosticsIntervalSeconds = 5f;
 
     private readonly List<GameObject> loadedModels = new();
     private readonly Dictionary<GameObject, List<Material>> modelMaterials = new();
@@ -343,19 +368,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
             yield break;
         }
 
-        var optimizedMeshPath = GetOptimizedMeshCachePath(path, cacheDirectory);
-        var hasOptimizedCache = IsMeshFileValid(
-            optimizedMeshPath,
-            OptimizedMeshFileVersion);
-        if (!hasOptimizedCache)
-        {
-            DeleteTemporaryFile(optimizedMeshPath);
-        }
-
-        SetStatus(
-            hasOptimizedCache
-                ? "Creating Unity objects from optimized mesh cache..."
-                : "Creating and optimizing Unity meshes...");
+        // Version 4 records are already persistent, spatially fragmented, and
+        // random-access. Building the old monolithic "optimized" cache would
+        // force every mesh through Unity and defeat bounded residency.
+        SetStatus("Reading the persistent IFC spatial index...");
 
         Exception importException = null;
         IEnumerator importRoutine = null;
@@ -363,10 +379,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         try
         {
             importRoutine = ImportMeshFile(
-                hasOptimizedCache ? optimizedMeshPath : meshPath,
+                meshPath,
                 Path.GetFileNameWithoutExtension(path),
                 path,
-                hasOptimizedCache ? null : optimizedMeshPath);
+                null);
         }
         catch (Exception exception)
         {
@@ -403,33 +419,42 @@ public sealed class XbimIfcLoader : MonoBehaviour
             yield break;
         }
 
-        var lodController = loadedModel.GetComponent<IfcModelLodController>() ??
-                            loadedModel.AddComponent<IfcModelLodController>();
-        SetStatus("Building distance proxy geometry...");
-        var proxyRoutine = lodController.RebuildIncrementally();
-        while (proxyRoutine.MoveNext())
+        var streamedModel = loadedModel.GetComponent<IfcStreamedModel>();
+        if (streamedModel == null)
         {
-            yield return proxyRoutine.Current;
-        }
-
-        if (releaseCpuMeshData)
-        {
-            SetStatus("Releasing source mesh memory...");
-            var releaseRoutine = ReleaseMeshCpuDataIncrementally(loadedModel);
-            while (releaseRoutine.MoveNext())
+            var lodController = loadedModel.GetComponent<IfcModelLodController>() ??
+                                loadedModel.AddComponent<IfcModelLodController>();
+            SetStatus("Building distance proxy geometry...");
+            var proxyRoutine = lodController.RebuildIncrementally();
+            while (proxyRoutine.MoveNext())
             {
-                yield return releaseRoutine.Current;
+                yield return proxyRoutine.Current;
+            }
+
+            if (releaseCpuMeshData)
+            {
+                SetStatus("Releasing source mesh memory...");
+                var releaseRoutine = ReleaseMeshCpuDataIncrementally(loadedModel);
+                while (releaseRoutine.MoveNext())
+                {
+                    yield return releaseRoutine.Current;
+                }
             }
         }
 
         loadedModels.Add(loadedModel);
         modelSourcePaths[loadedModel] = path;
         importingModel = null;
-        SetStatus(
-            $"IFC import complete: {LastSourceTriangleCount:N0} to " +
-            $"{LastOptimizedTriangleCount:N0} triangles " +
-            $"({LastTriangleReduction:P1} reduction).");
-        LogRenderState(loadedModel);
+        SetStatus(streamedModel != null
+            ? $"IFC indexed: {streamedModel.TotalTriangleCount:N0} triangles on disk; " +
+              $"view-dependent geometry will stream within global budgets."
+            : $"IFC import complete: {LastSourceTriangleCount:N0} to " +
+              $"{LastOptimizedTriangleCount:N0} triangles " +
+              $"({LastTriangleReduction:P1} reduction).");
+        if (streamedModel == null)
+        {
+            LogRenderState(loadedModel);
+        }
         LoadCompleted?.Invoke(loadedModel);
         IsLoading = false;
         loadRoutine = null;
@@ -468,6 +493,14 @@ public sealed class XbimIfcLoader : MonoBehaviour
         if (!enableRuntimeStaticBatching)
         {
             return;
+        }
+
+        foreach (var model in loadedModels)
+        {
+            if (model != null && model.TryGetComponent<IfcStreamedModel>(out _))
+            {
+                return;
+            }
         }
 
         staticBatchPending = true;
@@ -563,7 +596,8 @@ public sealed class XbimIfcLoader : MonoBehaviour
         }
 
         var version = reader.ReadInt32();
-        if (version != RawMeshFileVersion &&
+        if (version != LegacyRawMeshFileVersion &&
+            version != RawMeshFileVersion &&
             version != OptimizedMeshFileVersion)
         {
             throw new InvalidDataException($"Unsupported xBIM mesh version: {version}.");
@@ -588,6 +622,28 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
         var meshCount = reader.ReadInt32();
         ValidateRecordCount(meshCount, "mesh");
+
+        if (version == RawMeshFileVersion)
+        {
+            var streamingRoutine = ImportStreamingIndex(
+                reader,
+                path,
+                modelName,
+                sourcePath,
+                metresPerUnit,
+                originX,
+                originY,
+                originZ,
+                styles,
+                hierarchy,
+                meshCount);
+            while (streamingRoutine.MoveNext())
+            {
+                yield return streamingRoutine.Current;
+            }
+
+            yield break;
+        }
 
         var optimizedPartialPath = string.IsNullOrWhiteSpace(optimizedCachePath)
             ? null
@@ -925,6 +981,205 @@ public sealed class XbimIfcLoader : MonoBehaviour
             "Triangle Reduction",
             $"{reductionPercent:F1}%"));
         modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
+    }
+
+    private IEnumerator ImportStreamingIndex(
+        BinaryReader reader,
+        string cachePath,
+        string modelName,
+        string sourcePath,
+        double metresPerUnit,
+        double originX,
+        double originY,
+        double originZ,
+        IReadOnlyDictionary<int, IfcMaterialStyle> styles,
+        IReadOnlyList<IfcHierarchyNode> hierarchy,
+        int meshCount)
+    {
+        loadedModel = new GameObject(modelName);
+        importingModel = loadedModel;
+        activeMaterialCache = new Dictionary<int, Material>();
+        activeMaterialsByAppearance = new Dictionary<IfcMaterialAppearance, Material>();
+        modelMaterials[loadedModel] = new List<Material>();
+        modelSourcePaths[loadedModel] = sourcePath;
+        if (modelParent != null)
+        {
+            loadedModel.transform.SetParent(modelParent, false);
+        }
+
+        loadedModel.transform.localScale = Vector3.one * (float)metresPerUnit;
+        var modelMetadata = loadedModel.AddComponent<IfcMetadataComponent>();
+        var modelProperties = new List<KeyValuePair<string, string>>
+        {
+            new(
+                "Length Scale (metres/unit)",
+                metresPerUnit.ToString("G9", CultureInfo.InvariantCulture)),
+            new(SourcePathProperty, sourcePath),
+            new(
+                "Local Origin (IFC coordinates)",
+                $"{originX:G9}, {originY:G9}, {originZ:G9}"),
+            new(
+                "Linear Deflection (mm)",
+                LinearDeflection.ToString("G9", CultureInfo.InvariantCulture)),
+            new(
+                "Angular Deflection (degrees)",
+                AngularDeflection.ToString("G9", CultureInfo.InvariantCulture)),
+            new("Geometry Residency", "View-dependent spatial streaming"),
+            new(
+                "Streaming Cell Size (metres)",
+                streamingCellSizeMetres.ToString("G9", CultureInfo.InvariantCulture))
+        };
+        modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
+
+        var hierarchyObjects = CreateHierarchy(hierarchy, loadedModel.transform);
+        var parentsByProduct = new Dictionary<int, Transform>(hierarchyObjects.Count);
+        foreach (var pair in hierarchyObjects)
+        {
+            parentsByProduct[pair.Key] = pair.Value.transform;
+        }
+
+        var materialsByStyle = new Dictionary<int, Material>(styles.Count);
+        foreach (var pair in styles)
+        {
+            materialsByStyle[pair.Key] = GetMaterial(pair.Value);
+        }
+
+        if (!materialsByStyle.ContainsKey(0))
+        {
+            materialsByStyle[0] = GetMaterial(IfcMaterialStyle.Default(0));
+        }
+
+        var records = new List<IfcStreamMeshRecord>(meshCount);
+        LastSourceTriangleCount = 0;
+        LastOptimizedTriangleCount = 0;
+        for (var meshIndex = 0; meshIndex < meshCount; meshIndex++)
+        {
+            var recordStart = reader.BaseStream.Position;
+            var recordLength = reader.ReadInt64();
+            if (recordLength < 56L ||
+                recordLength > reader.BaseStream.Length - recordStart - sizeof(long))
+            {
+                throw new InvalidDataException(
+                    $"Invalid streamed IFC record length: {recordLength}.");
+            }
+
+            var cellX = reader.ReadInt32();
+            var cellY = reader.ReadInt32();
+            var cellZ = reader.ReadInt32();
+            var minimumX = reader.ReadSingle();
+            var minimumY = reader.ReadSingle();
+            var minimumZ = reader.ReadSingle();
+            var maximumX = reader.ReadSingle();
+            var maximumY = reader.ReadSingle();
+            var maximumZ = reader.ReadSingle();
+            if (!float.IsFinite(minimumX) ||
+                !float.IsFinite(minimumY) ||
+                !float.IsFinite(minimumZ) ||
+                !float.IsFinite(maximumX) ||
+                !float.IsFinite(maximumY) ||
+                !float.IsFinite(maximumZ) ||
+                maximumX < minimumX ||
+                maximumY < minimumY ||
+                maximumZ < minimumZ)
+            {
+                throw new InvalidDataException("A streamed IFC record has invalid bounds.");
+            }
+
+            var triangleCount = reader.ReadInt32();
+            var vertexCount = reader.ReadInt32();
+            var indexCount = reader.ReadInt32();
+            var styleLabel = reader.ReadInt32();
+            var productLabel = reader.ReadInt32();
+            ValidateCount(triangleCount, "triangle");
+            ValidateCount(vertexCount, "vertex");
+            ValidateCount(indexCount, "index");
+            if (triangleCount <= 0 ||
+                vertexCount <= 0 ||
+                indexCount != triangleCount * 3)
+            {
+                throw new InvalidDataException(
+                    "A streamed IFC record has inconsistent geometry counts.");
+            }
+
+            var minimum = new Vector3(minimumX, minimumZ, minimumY);
+            var maximum = new Vector3(maximumX, maximumZ, maximumY);
+            var vertexStride = sizeof(float) * 6L +
+                               (importTextureCoordinates ? sizeof(float) * 2L : 0L) +
+                               (importTangents ? sizeof(float) * 4L : 0L);
+            var meshBufferBytes =
+                (long)vertexCount * vertexStride +
+                (long)indexCount * (vertexCount > ushort.MaxValue
+                    ? sizeof(uint)
+                    : sizeof(ushort));
+            var retainsCpuMeshCopy =
+                !releaseCpuMeshData ||
+                generateMeshColliders &&
+                triangleCount > maximumMeshColliderTriangles;
+            var estimatedBytes = meshBufferBytes * (retainsCpuMeshCopy ? 2L : 1L);
+            records.Add(new IfcStreamMeshRecord
+            {
+                PayloadOffset = reader.BaseStream.Position,
+                Cell = new Vector3Int(cellX, cellZ, cellY),
+                LocalBounds = new Bounds(
+                    (minimum + maximum) * 0.5f,
+                    maximum - minimum),
+                TriangleCount = triangleCount,
+                VertexCount = vertexCount,
+                IndexCount = indexCount,
+                StyleLabel = styleLabel,
+                ProductLabel = productLabel,
+                EstimatedResidentBytes = estimatedBytes
+            });
+            LastSourceTriangleCount += triangleCount;
+            LastOptimizedTriangleCount += triangleCount;
+
+            reader.BaseStream.Position =
+                recordStart + sizeof(long) + recordLength;
+            if ((meshIndex + 1) % 4_096 == 0)
+            {
+                SetStatus($"Indexing IFC cells... {meshIndex + 1:N0}/{meshCount:N0}");
+                yield return null;
+            }
+        }
+
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Source Triangles",
+            LastSourceTriangleCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Optimized Triangles",
+            LastOptimizedTriangleCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Triangle Reduction",
+            "0.0% (detail remains on disk until viewed)"));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Stream Fragments",
+            meshCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
+
+        var settings = new IfcStreamingSettings(
+            streamingCellSizeMetres,
+            streamingLoadDistanceMetres,
+            streamingUnloadDistanceMetres,
+            invisibleCellRetentionSeconds,
+            streamingEvaluationInterval,
+            maximumResidentTriangles,
+            (long)maximumResidentMeshMemoryMegabytes * 1024L * 1024L,
+            maximumResidentRenderers,
+            maximumMeshLoadsPerFrame,
+            generateMeshColliders,
+            maximumMeshColliderTriangles,
+            importTextureCoordinates,
+            importTangents,
+            releaseCpuMeshData,
+            enableStreamingDiagnostics,
+            streamingDiagnosticsIntervalSeconds);
+        loadedModel.AddComponent<IfcStreamedModel>().Initialize(
+            cachePath,
+            metresPerUnit,
+            records,
+            parentsByProduct,
+            materialsByStyle,
+            settings);
     }
 
     private Mesh SimplifyMesh(Mesh sourceMesh, int sourceTriangleCount)
@@ -1388,7 +1643,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
             metadata.Properties.TryGetValue(
                 SourcePathProperty,
                 out var sourcePath);
-            if (!metadata.Properties.ContainsKey("Optimized Triangles"))
+            var streamedModel = model.GetComponent<IfcStreamedModel>();
+            if (!metadata.Properties.ContainsKey("Optimized Triangles") ||
+                streamedModel != null && !streamedModel.IsInitialized)
             {
                 if (!string.IsNullOrWhiteSpace(sourcePath) &&
                     File.Exists(sourcePath))
@@ -1505,7 +1762,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
             Quote(inputPath),
             Quote(outputPath),
             LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
-            AngularDeflection.ToString("R", CultureInfo.InvariantCulture));
+            AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
+            streamingCellSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            maximumTrianglesPerFragment.ToString(CultureInfo.InvariantCulture));
     }
 
     private string GetConvertedMeshCachePath(
@@ -1517,6 +1776,8 @@ public sealed class XbimIfcLoader : MonoBehaviour
             BuildSourceFingerprint(inputPath),
             LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
             AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
+            streamingCellSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            maximumTrianglesPerFragment.ToString(CultureInfo.InvariantCulture),
             RawMeshFileVersion.ToString(CultureInfo.InvariantCulture));
         return BuildCachePath(inputPath, cacheDirectory, fingerprint, string.Empty);
     }
@@ -1874,6 +2135,28 @@ public sealed class XbimIfcLoader : MonoBehaviour
         meshesPerFrame = Mathf.Max(1, meshesPerFrame);
         sourceTrianglesPerFrame = Mathf.Max(1_000, sourceTrianglesPerFrame);
         converterTimeoutSeconds = Mathf.Max(30f, converterTimeoutSeconds);
+        streamingCellSizeMetres = Mathf.Max(1f, streamingCellSizeMetres);
+        maximumTrianglesPerFragment = Mathf.Clamp(
+            maximumTrianglesPerFragment,
+            1_000,
+            5_000_000);
+        streamingLoadDistanceMetres = Mathf.Max(
+            streamingCellSizeMetres,
+            streamingLoadDistanceMetres);
+        streamingUnloadDistanceMetres = Mathf.Max(
+            streamingLoadDistanceMetres,
+            streamingUnloadDistanceMetres);
+        invisibleCellRetentionSeconds = Mathf.Max(0f, invisibleCellRetentionSeconds);
+        streamingEvaluationInterval = Mathf.Max(0.05f, streamingEvaluationInterval);
+        maximumResidentTriangles = Math.Max(100_000L, maximumResidentTriangles);
+        maximumResidentMeshMemoryMegabytes = Mathf.Max(
+            64,
+            maximumResidentMeshMemoryMegabytes);
+        maximumResidentRenderers = Mathf.Max(1, maximumResidentRenderers);
+        maximumMeshLoadsPerFrame = Mathf.Max(1, maximumMeshLoadsPerFrame);
+        streamingDiagnosticsIntervalSeconds = Mathf.Max(
+            1f,
+            streamingDiagnosticsIntervalSeconds);
         if (Application.isPlaying)
         {
             ApplyFaceCullingToLoadedMaterials();
