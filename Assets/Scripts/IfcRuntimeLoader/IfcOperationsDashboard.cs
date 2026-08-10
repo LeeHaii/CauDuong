@@ -519,12 +519,22 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             }
 
             var modelContext = ReadModelContext(modelRoot);
+            var streamedModel = modelRoot.GetComponent<IfcStreamedModel>();
             var metadataComponents =
                 modelRoot.GetComponentsInChildren<IfcElementMetadata>(true);
             foreach (var metadata in metadataComponents)
             {
-                var renderers = CollectOwnedRenderers(metadata.transform);
-                if (renderers.Count == 0)
+                var streamedSummary = default(IfcStreamedElementSummary);
+                var hasStreamedSummary =
+                    streamedModel != null &&
+                    streamedModel.TryGetElementSummary(
+                        metadata.EntityLabel,
+                        out streamedSummary);
+                var renderers = hasStreamedSummary
+                    ? streamedModel.GetElementRenderers(metadata.EntityLabel)
+                    : CollectOwnedRenderers(metadata.transform);
+                if ((renderers == null || renderers.Count == 0) &&
+                    !hasStreamedSummary)
                 {
                     continue;
                 }
@@ -560,7 +570,10 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
                     state,
                     renderers,
                     modelRoot.transform,
-                    modelContext);
+                    modelContext,
+                    hasStreamedSummary
+                        ? streamedSummary
+                        : (IfcStreamedElementSummary?)null);
                 records.Add(record);
                 recordsByMetadata[metadata] = record;
                 foreach (var renderer in renderers)
@@ -594,6 +607,16 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         if (record == null || record.Renderers == null)
         {
             return default;
+        }
+
+        var streamedModel = record.Metadata.GetComponentInParent<IfcStreamedModel>();
+        if (streamedModel != null &&
+            streamedModel.TryGetElementWorldBounds(
+                record.Metadata.EntityLabel,
+                out var streamedBounds))
+        {
+            record.Bounds = streamedBounds;
+            return streamedBounds;
         }
 
         var found = false;
@@ -653,37 +676,57 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         IfcOperationsState state,
         List<Renderer> renderers,
         Transform modelRoot,
-        ModelContext context)
+        ModelContext context,
+        IfcStreamedElementSummary? streamedSummary = null)
     {
-        var bounds = renderers[0].bounds;
-        var triangleCount = 0L;
-        var vertexCount = 0L;
-        var normalCount = 0L;
-        var indexCount = 0L;
-
-        foreach (var renderer in renderers)
+        Bounds bounds;
+        long triangleCount;
+        long vertexCount;
+        long normalCount;
+        long indexCount;
+        Color color;
+        if (streamedSummary is { } summary)
         {
-            bounds.Encapsulate(renderer.bounds);
-
-            if (!renderer.TryGetComponent<MeshFilter>(out var meshFilter) ||
-                meshFilter.sharedMesh == null)
+            bounds = TransformBounds(modelRoot, summary.LocalBounds);
+            triangleCount = summary.TriangleCount;
+            vertexCount = summary.VertexCount;
+            normalCount = summary.VertexCount;
+            indexCount = summary.IndexCount;
+            color = summary.Color;
+        }
+        else
+        {
+            bounds = renderers[0].bounds;
+            triangleCount = 0L;
+            vertexCount = 0L;
+            normalCount = 0L;
+            indexCount = 0L;
+            foreach (var renderer in renderers)
             {
-                continue;
+                bounds.Encapsulate(renderer.bounds);
+
+                if (!renderer.TryGetComponent<MeshFilter>(out var meshFilter) ||
+                    meshFilter.sharedMesh == null)
+                {
+                    continue;
+                }
+
+                var mesh = meshFilter.sharedMesh;
+                vertexCount += mesh.vertexCount;
+                if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal))
+                {
+                    normalCount += mesh.vertexCount;
+                }
+
+                for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                {
+                    var subMeshIndices = (long)mesh.GetIndexCount(subMesh);
+                    indexCount += subMeshIndices;
+                    triangleCount += subMeshIndices / 3L;
+                }
             }
 
-            var mesh = meshFilter.sharedMesh;
-            vertexCount += mesh.vertexCount;
-            if (mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal))
-            {
-                normalCount += mesh.vertexCount;
-            }
-
-            for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
-            {
-                var subMeshIndices = (long)mesh.GetIndexCount(subMesh);
-                indexCount += subMeshIndices;
-                triangleCount += subMeshIndices / 3L;
-            }
+            color = ReadRendererColor(renderers);
         }
 
         var localCenter = modelRoot.InverseTransformPoint(bounds.center);
@@ -711,7 +754,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             IfcGlobalId = metadata.GlobalId,
             SourceFile = context.SourceFile,
             Bounds = bounds,
-            Color = ReadRendererColor(renderers),
+            Color = color,
             TriangleCount = triangleCount,
             VertexCount = vertexCount,
             NormalCount = normalCount,
@@ -722,6 +765,20 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             Longitude = longitude,
             Elevation = elevation
         };
+    }
+
+    private static Bounds TransformBounds(Transform owner, Bounds localBounds)
+    {
+        var center = owner.TransformPoint(localBounds.center);
+        var extents = localBounds.extents;
+        var axisX = owner.TransformVector(extents.x, 0f, 0f);
+        var axisY = owner.TransformVector(0f, extents.y, 0f);
+        var axisZ = owner.TransformVector(0f, 0f, extents.z);
+        extents = new Vector3(
+            Mathf.Abs(axisX.x) + Mathf.Abs(axisY.x) + Mathf.Abs(axisZ.x),
+            Mathf.Abs(axisX.y) + Mathf.Abs(axisY.y) + Mathf.Abs(axisZ.y),
+            Mathf.Abs(axisX.z) + Mathf.Abs(axisY.z) + Mathf.Abs(axisZ.z));
+        return new Bounds(center, extents * 2f);
     }
 
     private static Color ReadRendererColor(IReadOnlyList<Renderer> renderers)
@@ -982,6 +1039,8 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         foreach (var record in records)
         {
             var visible = categoryVisibility[record.State.Category];
+            record.Metadata.GetComponentInParent<IfcStreamedModel>()?
+                .SetElementVisible(record.Metadata.EntityLabel, visible);
             foreach (var renderer in record.Renderers)
             {
                 if (renderer != null)
@@ -2339,6 +2398,9 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         {
             return;
         }
+
+        record.Metadata.GetComponentInParent<IfcStreamedModel>()?
+            .SetElementHighlighted(record.Metadata.EntityLabel, highlighted);
 
         foreach (var renderer in record.Renderers)
         {

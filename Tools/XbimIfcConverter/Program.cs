@@ -10,15 +10,18 @@ using Xbim.Ifc4.Interfaces;
 using Xbim.ModelGeometry.Scene;
 
 const uint Magic = 0x4D494258; // "XBIM" in little-endian files.
-const int FormatVersion = 2;
+const int FormatVersion = 4;
 const double DefaultLinearDeflectionMillimetres = 5d;
 const double DefaultAngularDeflectionDegrees = 30d;
+const double DefaultSpatialCellSizeMetres = 100d;
+const int DefaultMaximumTrianglesPerFragment = 100_000;
 
-if (args.Length is not 2 and not 4)
+if (args.Length is not 2 and not 4 and not 6)
 {
     Console.Error.WriteLine(
         "Usage: XbimIfcConverter <input.ifc> <output.xbimmesh> " +
-        "[linearDeflectionMillimetres angularDeflectionDegrees]");
+        "[linearDeflectionMillimetres angularDeflectionDegrees " +
+        "spatialCellSizeMetres maximumTrianglesPerFragment]");
     return 2;
 }
 
@@ -26,8 +29,10 @@ var inputPath = Path.GetFullPath(args[0]);
 var outputPath = Path.GetFullPath(args[1]);
 var linearDeflectionMillimetres = DefaultLinearDeflectionMillimetres;
 var angularDeflectionDegrees = DefaultAngularDeflectionDegrees;
+var spatialCellSizeMetres = DefaultSpatialCellSizeMetres;
+var maximumTrianglesPerFragment = DefaultMaximumTrianglesPerFragment;
 
-if (args.Length == 4 &&
+if (args.Length >= 4 &&
     (!double.TryParse(
          args[2],
          NumberStyles.Float,
@@ -43,6 +48,23 @@ if (args.Length == 4 &&
     return 4;
 }
 
+if (args.Length == 6 &&
+    (!double.TryParse(
+         args[4],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out spatialCellSizeMetres) ||
+     !int.TryParse(
+         args[5],
+         NumberStyles.Integer,
+         CultureInfo.InvariantCulture,
+         out maximumTrianglesPerFragment)))
+{
+    Console.Error.WriteLine(
+        "Spatial cell size and maximum fragment triangle count must be valid numbers.");
+    return 4;
+}
+
 if (!double.IsFinite(linearDeflectionMillimetres) ||
     linearDeflectionMillimetres is < 0.01d or > 1000d ||
     !double.IsFinite(angularDeflectionDegrees) ||
@@ -50,6 +72,16 @@ if (!double.IsFinite(linearDeflectionMillimetres) ||
 {
     Console.Error.WriteLine(
         "Linear deflection must be 0.01-1000 mm and angular deflection must be 1-90 degrees.");
+    return 4;
+}
+
+if (!double.IsFinite(spatialCellSizeMetres) ||
+    spatialCellSizeMetres is < 1d or > 100_000d ||
+    maximumTrianglesPerFragment is < 1_000 or > 5_000_000)
+{
+    Console.Error.WriteLine(
+        "Spatial cell size must be 1-100000 metres and each fragment must allow " +
+        "1000-5000000 triangles.");
     return 4;
 }
 
@@ -217,50 +249,26 @@ try
             ? $"{ifcType}_{shapeInstance.IfcProductLabel}"
             : displayName;
 
-        writer.Write($"{objectName}_Mesh_{meshCount + 1}");
-        writer.Write(shapeInstance.IfcProductLabel);
-
-        writer.Write(transformedVertices.Length);
-        foreach (var vertex in transformedVertices)
+        var fragments = PartitionShape(
+            transformedVertices,
+            normals,
+            uvs,
+            tangents,
+            indices,
+            metresPerUnit,
+            spatialCellSizeMetres,
+            maximumTrianglesPerFragment);
+        foreach (var fragment in fragments)
         {
-            writer.Write((float)vertex.X);
-            writer.Write((float)vertex.Y);
-            writer.Write((float)vertex.Z);
+            WriteMeshFragment(
+                writer,
+                fragment,
+                $"{objectName}_Cell_{fragment.Cell.X}_{fragment.Cell.Y}_{fragment.Cell.Z}_" +
+                $"Mesh_{meshCount + 1}",
+                shapeInstance.IfcProductLabel,
+                shapeExport.StyleLabel);
+            meshCount++;
         }
-
-        writer.Write(normals.Length);
-        foreach (var normal in normals)
-        {
-            writer.Write((float)normal.X);
-            writer.Write((float)normal.Y);
-            writer.Write((float)normal.Z);
-        }
-
-        writer.Write(uvs.Length);
-        foreach (var uv in uvs)
-        {
-            writer.Write(uv.X);
-            writer.Write(uv.Y);
-        }
-
-        writer.Write(tangents.Length);
-        foreach (var tangent in tangents)
-        {
-            writer.Write(tangent.X);
-            writer.Write(tangent.Y);
-            writer.Write(tangent.Z);
-            writer.Write(tangent.W);
-        }
-
-        writer.Write(1); // One style per xBIM shape instance.
-        writer.Write(shapeExport.StyleLabel);
-        writer.Write(indices.Length);
-        foreach (var index in indices)
-        {
-            writer.Write(index);
-        }
-
-        meshCount++;
     }
 
     writer.Flush();
@@ -273,13 +281,148 @@ try
         $"Converted {meshCount} meshes, {hierarchy.Count} hierarchy nodes, " +
         $"{styles.Count} styles at {metresPerUnit:G6} metres/unit with " +
         $"{linearDeflectionMillimetres:G6} mm linear / " +
-        $"{angularDeflectionDegrees:G6} deg angular deflection to {outputPath}");
+        $"{angularDeflectionDegrees:G6} deg angular deflection, " +
+        $"{spatialCellSizeMetres:G6} m cells and at most " +
+        $"{maximumTrianglesPerFragment:N0} triangles/fragment to {outputPath}");
     return 0;
 }
 catch (Exception exception)
 {
     Console.Error.WriteLine(exception);
     return 1;
+}
+
+static IReadOnlyList<MeshFragment> PartitionShape(
+    IReadOnlyList<Vector3d> vertices,
+    IReadOnlyList<Vector3d> normals,
+    IReadOnlyList<Uv> uvs,
+    IReadOnlyList<Tangent> tangents,
+    IReadOnlyList<int> indices,
+    double metresPerUnit,
+    double cellSizeMetres,
+    int maximumTrianglesPerFragment)
+{
+    var buildersByCell = new Dictionary<SpatialCell, List<MeshFragmentBuilder>>();
+    for (var index = 0; index + 2 < indices.Count; index += 3)
+    {
+        var index0 = indices[index];
+        var index1 = indices[index + 1];
+        var index2 = indices[index + 2];
+        var centroid = (vertices[index0] + vertices[index1] + vertices[index2]) *
+                       (1d / 3d);
+        var cell = new SpatialCell(
+            ToCellCoordinate(centroid.X * metresPerUnit, cellSizeMetres),
+            ToCellCoordinate(centroid.Y * metresPerUnit, cellSizeMetres),
+            ToCellCoordinate(centroid.Z * metresPerUnit, cellSizeMetres));
+
+        if (!buildersByCell.TryGetValue(cell, out var builders))
+        {
+            builders = new List<MeshFragmentBuilder>();
+            buildersByCell.Add(cell, builders);
+        }
+
+        var builder = builders.Count > 0 ? builders[^1] : null;
+        if (builder == null || builder.TriangleCount >= maximumTrianglesPerFragment)
+        {
+            builder = new MeshFragmentBuilder(
+                cell,
+                vertices,
+                normals,
+                uvs,
+                tangents);
+            builders.Add(builder);
+        }
+
+        builder.AddTriangle(index0, index1, index2);
+    }
+
+    return buildersByCell
+        .OrderBy(pair => pair.Key.X)
+        .ThenBy(pair => pair.Key.Y)
+        .ThenBy(pair => pair.Key.Z)
+        .SelectMany(pair => pair.Value)
+        .Select(builder => builder.Build())
+        .ToList();
+}
+
+static int ToCellCoordinate(double valueMetres, double cellSizeMetres)
+{
+    var coordinate = Math.Floor(valueMetres / cellSizeMetres);
+    return (int)Math.Clamp(coordinate, int.MinValue, int.MaxValue);
+}
+
+static void WriteMeshFragment(
+    BinaryWriter writer,
+    MeshFragment fragment,
+    string objectName,
+    int productLabel,
+    int styleLabel)
+{
+    var recordStart = writer.BaseStream.Position;
+    writer.Write(0L); // Bytes after this field; patched when the record is complete.
+    writer.Write(fragment.Cell.X);
+    writer.Write(fragment.Cell.Y);
+    writer.Write(fragment.Cell.Z);
+    writer.Write((float)fragment.Minimum.X);
+    writer.Write((float)fragment.Minimum.Y);
+    writer.Write((float)fragment.Minimum.Z);
+    writer.Write((float)fragment.Maximum.X);
+    writer.Write((float)fragment.Maximum.Y);
+    writer.Write((float)fragment.Maximum.Z);
+    writer.Write(fragment.TriangleCount);
+    writer.Write(fragment.Vertices.Length);
+    writer.Write(fragment.Indices.Length);
+    writer.Write(styleLabel);
+    writer.Write(productLabel);
+
+    // The payload intentionally remains self-contained. Unity can seek directly
+    // to it from the compact record header without deserializing other cells.
+    writer.Write(objectName);
+    writer.Write(productLabel);
+    writer.Write(fragment.Vertices.Length);
+    foreach (var vertex in fragment.Vertices)
+    {
+        writer.Write((float)vertex.X);
+        writer.Write((float)vertex.Y);
+        writer.Write((float)vertex.Z);
+    }
+
+    writer.Write(fragment.Normals.Length);
+    foreach (var normal in fragment.Normals)
+    {
+        writer.Write((float)normal.X);
+        writer.Write((float)normal.Y);
+        writer.Write((float)normal.Z);
+    }
+
+    writer.Write(fragment.Uvs.Length);
+    foreach (var uv in fragment.Uvs)
+    {
+        writer.Write(uv.X);
+        writer.Write(uv.Y);
+    }
+
+    writer.Write(fragment.Tangents.Length);
+    foreach (var tangent in fragment.Tangents)
+    {
+        writer.Write(tangent.X);
+        writer.Write(tangent.Y);
+        writer.Write(tangent.Z);
+        writer.Write(tangent.W);
+    }
+
+    writer.Write(1); // A shape instance has one resolved IFC surface style.
+    writer.Write(styleLabel);
+    writer.Write(fragment.Indices.Length);
+    foreach (var index in fragment.Indices)
+    {
+        writer.Write(index);
+    }
+
+    var recordEnd = writer.BaseStream.Position;
+    writer.BaseStream.Position = recordStart;
+    writer.Write(recordEnd - recordStart - sizeof(long));
+    writer.BaseStream.Position = recordEnd;
 }
 
 static bool TryFindLocalOrigin(
@@ -1549,6 +1692,122 @@ static Tangent[] CalculateTangents(IReadOnlyList<Vector3d> normals)
 static float Clamp01(double value)
 {
     return (float)Math.Clamp(value, 0d, 1d);
+}
+
+internal readonly record struct SpatialCell(int X, int Y, int Z);
+
+internal sealed record MeshFragment(
+    SpatialCell Cell,
+    Vector3d Minimum,
+    Vector3d Maximum,
+    Vector3d[] Vertices,
+    Vector3d[] Normals,
+    Uv[] Uvs,
+    Tangent[] Tangents,
+    int[] Indices)
+{
+    public int TriangleCount => Indices.Length / 3;
+}
+
+internal sealed class MeshFragmentBuilder
+{
+    private readonly IReadOnlyList<Vector3d> sourceVertices;
+    private readonly IReadOnlyList<Vector3d> sourceNormals;
+    private readonly IReadOnlyList<Uv> sourceUvs;
+    private readonly IReadOnlyList<Tangent> sourceTangents;
+    private readonly Dictionary<int, int> localIndexBySource = new();
+    private readonly List<Vector3d> vertices = new();
+    private readonly List<Vector3d> normals = new();
+    private readonly List<Uv> uvs = new();
+    private readonly List<Tangent> tangents = new();
+    private readonly List<int> indices = new();
+    private Vector3d minimum;
+    private Vector3d maximum;
+    private bool hasBounds;
+
+    public MeshFragmentBuilder(
+        SpatialCell cell,
+        IReadOnlyList<Vector3d> sourceVertices,
+        IReadOnlyList<Vector3d> sourceNormals,
+        IReadOnlyList<Uv> sourceUvs,
+        IReadOnlyList<Tangent> sourceTangents)
+    {
+        Cell = cell;
+        this.sourceVertices = sourceVertices;
+        this.sourceNormals = sourceNormals;
+        this.sourceUvs = sourceUvs;
+        this.sourceTangents = sourceTangents;
+    }
+
+    public SpatialCell Cell { get; }
+    public int TriangleCount => indices.Count / 3;
+
+    public void AddTriangle(int index0, int index1, int index2)
+    {
+        indices.Add(GetOrAddVertex(index0));
+        indices.Add(GetOrAddVertex(index1));
+        indices.Add(GetOrAddVertex(index2));
+    }
+
+    public MeshFragment Build()
+    {
+        return new MeshFragment(
+            Cell,
+            minimum,
+            maximum,
+            vertices.ToArray(),
+            normals.ToArray(),
+            uvs.ToArray(),
+            tangents.ToArray(),
+            indices.ToArray());
+    }
+
+    private int GetOrAddVertex(int sourceIndex)
+    {
+        if (localIndexBySource.TryGetValue(sourceIndex, out var localIndex))
+        {
+            return localIndex;
+        }
+
+        localIndex = vertices.Count;
+        localIndexBySource.Add(sourceIndex, localIndex);
+        var vertex = sourceVertices[sourceIndex];
+        vertices.Add(vertex);
+        if (sourceNormals.Count == sourceVertices.Count)
+        {
+            normals.Add(sourceNormals[sourceIndex]);
+        }
+
+        if (sourceUvs.Count == sourceVertices.Count)
+        {
+            uvs.Add(sourceUvs[sourceIndex]);
+        }
+
+        if (sourceTangents.Count == sourceVertices.Count)
+        {
+            tangents.Add(sourceTangents[sourceIndex]);
+        }
+
+        if (!hasBounds)
+        {
+            minimum = vertex;
+            maximum = vertex;
+            hasBounds = true;
+        }
+        else
+        {
+            minimum = new Vector3d(
+                Math.Min(minimum.X, vertex.X),
+                Math.Min(minimum.Y, vertex.Y),
+                Math.Min(minimum.Z, vertex.Z));
+            maximum = new Vector3d(
+                Math.Max(maximum.X, vertex.X),
+                Math.Max(maximum.Y, vertex.Y),
+                Math.Max(maximum.Z, vertex.Z));
+        }
+
+        return localIndex;
+    }
 }
 
 internal readonly record struct ShapeExport(

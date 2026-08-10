@@ -4,13 +4,22 @@ This helper keeps xBIM's .NET 8 and native OpenCASCADE geometry stack outside
 Unity's Mono/IL2CPP process. It converts IFC files into a compact versioned
 stream that `XbimIfcLoader` reads at runtime.
 
-The stream includes:
+The version 4 stream includes:
 
 - the IFC project length-unit conversion to metres
 - project/site/building/storey/product hierarchy
 - property-set and type-property metadata
 - IFC surface colours, transparency, specular colour, and smoothness
 - positions, normals, generated box-projection UVs, tangents, and sub-meshes
+- a compact random-access header for every mesh fragment
+- model-local bounds, product identity, material identity, and spatial-cell keys
+
+Geometry is split by triangle centroid into metre-sized spatial cells and each
+record also has a hard triangle limit. Unity reads the hierarchy and compact
+record headers once, then seeks directly to only the fragment payloads needed
+by the current camera. The complete geometry therefore remains persistent on
+disk without requiring matching Unity Mesh, MeshRenderer, collider, or GPU
+buffer allocations.
 
 IFC commonly contains surface styles but no reusable texture-coordinate data.
 The converter therefore generates deterministic metre-scaled UVs from the
@@ -32,7 +41,8 @@ dotnet publish XbimIfcConverter.csproj --configuration Release `
 The optional converter arguments are:
 
 ```text
-XbimIfcConverter input.ifc output.xbimmesh linearDeflectionMm angularDeflectionDegrees
+XbimIfcConverter input.ifc output.xbimmesh linearDeflectionMm angularDeflectionDegrees \
+  spatialCellSizeMetres maximumTrianglesPerFragment
 ```
 
 Unity exposes the same values on `XbimIfcLoader`. Higher values produce fewer
@@ -44,6 +54,10 @@ triangles on curved geometry:
 
 Linear deflection is converted from millimetres to the IFC model's native unit
 before xBIM creates its geometry context.
+
+The spatial defaults are `100 m` cells and at most `100,000` triangles per
+fragment. These are cache-layout controls rather than view settings; changing
+either value produces a new fingerprinted cache on the next runtime import.
 
 ## Material colour resolution
 
