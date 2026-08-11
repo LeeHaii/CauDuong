@@ -44,7 +44,26 @@ public static class IfcInteractionRaycaster
                 Physics.DefaultRaycastLayers,
                 QueryTriggerInteraction.Ignore);
 
-            if (TrySelectNearestIfc(ray, hits, out selectedHit, out metadata))
+            var foundPhysicsHit = TrySelectNearestIfc(
+                ray,
+                hits,
+                out selectedHit,
+                out metadata);
+            var foundOverviewHit = IfcStreamedModel.TryRaycastSurfaceOverview(
+                ray,
+                out var overviewHit);
+            if (foundOverviewHit &&
+                (!foundPhysicsHit || overviewHit.Distance < selectedHit.distance))
+            {
+                selectedHit = default;
+                selectedHit.point = overviewHit.Point;
+                selectedHit.normal = overviewHit.Normal;
+                selectedHit.distance = overviewHit.Distance;
+                metadata = overviewHit.Metadata;
+                return true;
+            }
+
+            if (foundPhysicsHit)
             {
                 return true;
             }
