@@ -10,18 +10,25 @@ using Xbim.Ifc4.Interfaces;
 using Xbim.ModelGeometry.Scene;
 
 const uint Magic = 0x4D494258; // "XBIM" in little-endian files.
-const int FormatVersion = 4;
+const int FormatVersion = 5;
 const double DefaultLinearDeflectionMillimetres = 5d;
 const double DefaultAngularDeflectionDegrees = 30d;
 const double DefaultSpatialCellSizeMetres = 100d;
-const int DefaultMaximumTrianglesPerFragment = 100_000;
+const int DefaultMaximumTrianglesPerFragment = 50_000;
+const int DefaultOverviewTargetTriangles = 200_000;
+const double DefaultOverviewClusterSizeMetres = 1d;
+const double DefaultOverviewBoundaryClusterSizeMetres = 0.25d;
+const double DefaultOverviewRegionSizeMetres = 1_000d;
 
-if (args.Length is not 2 and not 4 and not 6)
+if (args.Length is not 2 and not 4 and not 6 and not 10 and not 12)
 {
     Console.Error.WriteLine(
         "Usage: XbimIfcConverter <input.ifc> <output.xbimmesh> " +
         "[linearDeflectionMillimetres angularDeflectionDegrees " +
-        "spatialCellSizeMetres maximumTrianglesPerFragment]");
+        "spatialCellSizeMetres maximumTrianglesPerFragment " +
+        "overviewTargetTriangles overviewClusterSizeMetres " +
+        "overviewBoundaryClusterSizeMetres overviewRegionSizeMetres " +
+        "writeTextureCoordinates writeTangents]");
     return 2;
 }
 
@@ -31,6 +38,12 @@ var linearDeflectionMillimetres = DefaultLinearDeflectionMillimetres;
 var angularDeflectionDegrees = DefaultAngularDeflectionDegrees;
 var spatialCellSizeMetres = DefaultSpatialCellSizeMetres;
 var maximumTrianglesPerFragment = DefaultMaximumTrianglesPerFragment;
+var overviewTargetTriangles = DefaultOverviewTargetTriangles;
+var overviewClusterSizeMetres = DefaultOverviewClusterSizeMetres;
+var overviewBoundaryClusterSizeMetres = DefaultOverviewBoundaryClusterSizeMetres;
+var overviewRegionSizeMetres = DefaultOverviewRegionSizeMetres;
+var writeTextureCoordinates = false;
+var writeTangents = false;
 
 if (args.Length >= 4 &&
     (!double.TryParse(
@@ -48,7 +61,7 @@ if (args.Length >= 4 &&
     return 4;
 }
 
-if (args.Length == 6 &&
+if (args.Length >= 6 &&
     (!double.TryParse(
          args[4],
          NumberStyles.Float,
@@ -65,6 +78,40 @@ if (args.Length == 6 &&
     return 4;
 }
 
+if (args.Length >= 10 &&
+    (!int.TryParse(
+         args[6],
+         NumberStyles.Integer,
+         CultureInfo.InvariantCulture,
+         out overviewTargetTriangles) ||
+     !double.TryParse(
+         args[7],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out overviewClusterSizeMetres) ||
+     !double.TryParse(
+         args[8],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out overviewBoundaryClusterSizeMetres) ||
+     !double.TryParse(
+         args[9],
+         NumberStyles.Float,
+         CultureInfo.InvariantCulture,
+         out overviewRegionSizeMetres)))
+{
+    Console.Error.WriteLine("Overview settings must be valid invariant-culture numbers.");
+    return 4;
+}
+
+if (args.Length == 12 &&
+    (!bool.TryParse(args[10], out writeTextureCoordinates) ||
+     !bool.TryParse(args[11], out writeTangents)))
+{
+    Console.Error.WriteLine("Vertex-channel flags must be valid Boolean values.");
+    return 4;
+}
+
 if (!double.IsFinite(linearDeflectionMillimetres) ||
     linearDeflectionMillimetres is < 0.01d or > 1000d ||
     !double.IsFinite(angularDeflectionDegrees) ||
@@ -72,6 +119,22 @@ if (!double.IsFinite(linearDeflectionMillimetres) ||
 {
     Console.Error.WriteLine(
         "Linear deflection must be 0.01-1000 mm and angular deflection must be 1-90 degrees.");
+    return 4;
+}
+
+if (overviewTargetTriangles is < 10_000 or > 5_000_000 ||
+    !double.IsFinite(overviewClusterSizeMetres) ||
+    overviewClusterSizeMetres is < 0.05d or > 1_000d ||
+    !double.IsFinite(overviewBoundaryClusterSizeMetres) ||
+    overviewBoundaryClusterSizeMetres is < 0.01d or > 1_000d ||
+    overviewBoundaryClusterSizeMetres > overviewClusterSizeMetres ||
+    !double.IsFinite(overviewRegionSizeMetres) ||
+    overviewRegionSizeMetres is < 10d or > 1_000_000d)
+{
+    Console.Error.WriteLine(
+        "Overview target must be 10000-5000000 triangles; cluster sizes must be " +
+        "valid and boundary size may not exceed interior size; region size must " +
+        "be 10-1000000 metres.");
     return 4;
 }
 
@@ -236,11 +299,15 @@ try
 
         ValidateIndices(indices, transformedVertices.Length);
         var normals = CalculateNormals(transformedVertices, indices);
-        var uvs = CalculateBoxProjectedUvs(
-            transformedVertices,
-            normals,
-            metresPerUnit);
-        var tangents = CalculateTangents(normals);
+        var uvs = writeTextureCoordinates
+            ? CalculateBoxProjectedUvs(
+                transformedVertices,
+                normals,
+                metresPerUnit)
+            : Array.Empty<Uv>();
+        var tangents = writeTangents
+            ? CalculateTangents(normals)
+            : Array.Empty<Tangent>();
 
         var product = model.Instances[shapeInstance.IfcProductLabel] as IIfcProduct;
         var ifcType = product?.GetType().Name ?? "IfcProduct";
@@ -271,6 +338,27 @@ try
         }
     }
 
+    var overviewFragments = BuildSurfaceOverview(
+        context,
+        shapeExports,
+        origin,
+        metresPerUnit,
+        overviewTargetTriangles,
+        overviewClusterSizeMetres,
+        overviewBoundaryClusterSizeMetres,
+        overviewRegionSizeMetres,
+        Math.Min(maximumTrianglesPerFragment, 50_000));
+    writer.Write(overviewFragments.Count);
+    for (var overviewIndex = 0;
+         overviewIndex < overviewFragments.Count;
+         overviewIndex++)
+    {
+        WriteOverviewFragment(
+            writer,
+            overviewFragments[overviewIndex],
+            $"IFC_Surface_Overview_{overviewIndex + 1}");
+    }
+
     writer.Flush();
     var endPosition = output.Position;
     output.Position = meshCountPosition;
@@ -283,7 +371,10 @@ try
         $"{linearDeflectionMillimetres:G6} mm linear / " +
         $"{angularDeflectionDegrees:G6} deg angular deflection, " +
         $"{spatialCellSizeMetres:G6} m cells and at most " +
-        $"{maximumTrianglesPerFragment:N0} triangles/fragment to {outputPath}");
+        $"{maximumTrianglesPerFragment:N0} triangles/fragment and " +
+        $"{overviewFragments.Sum(fragment => fragment.TriangleCount):N0} " +
+        $"surface-overview triangles in {overviewFragments.Count:N0} fragments " +
+        $"to {outputPath}");
     return 0;
 }
 catch (Exception exception)
@@ -417,6 +508,176 @@ static void WriteMeshFragment(
     foreach (var index in fragment.Indices)
     {
         writer.Write(index);
+    }
+
+    var recordEnd = writer.BaseStream.Position;
+    writer.BaseStream.Position = recordStart;
+    writer.Write(recordEnd - recordStart - sizeof(long));
+    writer.BaseStream.Position = recordEnd;
+}
+
+static IReadOnlyList<OverviewFragment> BuildSurfaceOverview(
+    Xbim3DModelContext context,
+    IReadOnlyList<ShapeExport> shapeExports,
+    Vector3d origin,
+    double metresPerUnit,
+    int targetTriangles,
+    double initialClusterSizeMetres,
+    double initialBoundaryClusterSizeMetres,
+    double regionSizeMetres,
+    int maximumTrianglesPerFragment)
+{
+    var clusterSize = initialClusterSizeMetres;
+    var boundaryClusterSize = initialBoundaryClusterSizeMetres;
+    IReadOnlyList<OverviewFragment> fragments = Array.Empty<OverviewFragment>();
+    const int maximumAttempts = 8;
+    for (var attempt = 0; attempt < maximumAttempts; attempt++)
+    {
+        var builder = new SurfaceOverviewBuilder(
+            metresPerUnit,
+            clusterSize,
+            boundaryClusterSize,
+            regionSizeMetres,
+            maximumTrianglesPerFragment);
+        foreach (var shapeExport in shapeExports)
+        {
+            if (!TryReadTransformedShape(
+                    context,
+                    shapeExport.Shape,
+                    origin,
+                    out var vertices,
+                    out var indices))
+            {
+                continue;
+            }
+
+            builder.AddShape(
+                vertices,
+                indices,
+                shapeExport.Shape.IfcProductLabel,
+                shapeExport.StyleLabel);
+        }
+
+        fragments = builder.Build();
+        var triangleCount = fragments.Sum(fragment => fragment.TriangleCount);
+        Console.WriteLine(
+            $"Surface overview attempt {attempt + 1}: {triangleCount:N0} triangles " +
+            $"at {clusterSize:G6} m interior / " +
+            $"{boundaryClusterSize:G6} m boundary clustering.");
+        if (triangleCount <= targetTriangles || attempt == maximumAttempts - 1)
+        {
+            return fragments;
+        }
+
+        var scale = Math.Clamp(
+            Math.Sqrt((double)triangleCount / targetTriangles),
+            1.35d,
+            3d);
+        clusterSize *= scale;
+        boundaryClusterSize *= scale;
+    }
+
+    return fragments;
+}
+
+static bool TryReadTransformedShape(
+    Xbim3DModelContext context,
+    XbimShapeInstance shapeInstance,
+    Vector3d origin,
+    out Vector3d[] vertices,
+    out int[] indices)
+{
+    vertices = Array.Empty<Vector3d>();
+    indices = Array.Empty<int>();
+    var geometry = context.ShapeGeometry(shapeInstance);
+    var shapeData = ((IXbimShapeGeometryData)geometry).ShapeData;
+    if (shapeData is not { Length: > 0 })
+    {
+        return false;
+    }
+
+    using var shapeStream = new MemoryStream(shapeData, writable: false);
+    using var shapeReader = new BinaryReader(shapeStream);
+    var triangulation = shapeReader.ReadShapeTriangulation();
+    var sourceVertices = triangulation.Vertices.ToList();
+    indices = triangulation.Faces.SelectMany(face => face.Indices).ToArray();
+    if (sourceVertices.Count == 0 || indices.Length < 3)
+    {
+        return false;
+    }
+
+    vertices = new Vector3d[sourceVertices.Count];
+    for (var index = 0; index < sourceVertices.Count; index++)
+    {
+        var transformed = shapeInstance.Transformation.Transform(sourceVertices[index]);
+        vertices[index] = new Vector3d(
+            transformed.X - origin.X,
+            transformed.Y - origin.Y,
+            transformed.Z - origin.Z);
+    }
+
+    ValidateIndices(indices, vertices.Length);
+    return true;
+}
+
+static void WriteOverviewFragment(
+    BinaryWriter writer,
+    OverviewFragment fragment,
+    string objectName)
+{
+    var recordStart = writer.BaseStream.Position;
+    writer.Write(0L);
+    writer.Write(fragment.Cell.X);
+    writer.Write(fragment.Cell.Y);
+    writer.Write(fragment.Cell.Z);
+    writer.Write((float)fragment.Minimum.X);
+    writer.Write((float)fragment.Minimum.Y);
+    writer.Write((float)fragment.Minimum.Z);
+    writer.Write((float)fragment.Maximum.X);
+    writer.Write((float)fragment.Maximum.Y);
+    writer.Write((float)fragment.Maximum.Z);
+    writer.Write(fragment.TriangleCount);
+    writer.Write(fragment.Vertices.Length);
+    writer.Write(fragment.IndexCount);
+    writer.Write(0);
+    writer.Write(0);
+
+    writer.Write(objectName);
+    writer.Write(0);
+    writer.Write(fragment.Vertices.Length);
+    foreach (var vertex in fragment.Vertices)
+    {
+        writer.Write((float)vertex.X);
+        writer.Write((float)vertex.Y);
+        writer.Write((float)vertex.Z);
+    }
+
+    writer.Write(fragment.Normals.Length);
+    foreach (var normal in fragment.Normals)
+    {
+        writer.Write((float)normal.X);
+        writer.Write((float)normal.Y);
+        writer.Write((float)normal.Z);
+    }
+
+    writer.Write(0); // Surface overview materials currently do not use UVs.
+    writer.Write(0); // Surface overview materials currently do not use tangents.
+    writer.Write(fragment.SubMeshIndices.Length);
+    for (var subMesh = 0; subMesh < fragment.SubMeshIndices.Length; subMesh++)
+    {
+        writer.Write(fragment.StyleLabels[subMesh]);
+        var indices = fragment.SubMeshIndices[subMesh];
+        writer.Write(indices.Length);
+        foreach (var index in indices)
+        {
+            writer.Write(index);
+        }
+    }
+
+    writer.Write(fragment.TriangleProductLabels.Length);
+    foreach (var productLabel in fragment.TriangleProductLabels)
+    {
+        writer.Write(productLabel);
     }
 
     var recordEnd = writer.BaseStream.Position;

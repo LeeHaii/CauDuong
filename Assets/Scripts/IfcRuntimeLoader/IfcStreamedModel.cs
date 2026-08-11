@@ -1,11 +1,15 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Debug = UnityEngine.Debug;
 
 internal sealed class IfcStreamMeshRecord
 {
@@ -18,13 +22,19 @@ internal sealed class IfcStreamMeshRecord
     public int StyleLabel;
     public int ProductLabel;
     public long EstimatedResidentBytes;
+    public bool IsOverview;
 
     public bool Loading;
     public bool Resident;
     public bool Failed;
+    public bool BudgetReserved;
+    public bool UnloadQueued;
     public GameObject RuntimeObject;
     public Mesh Mesh;
     public MeshRenderer Renderer;
+    public Vector3[] SelectionVertices;
+    public int[][] SelectionSubMeshes;
+    public int[] TriangleProductLabels;
 }
 
 public readonly struct IfcStreamedElementSummary
@@ -47,6 +57,26 @@ public readonly struct IfcStreamedElementSummary
         VertexCount = vertexCount;
         IndexCount = indexCount;
         Color = color;
+    }
+}
+
+internal readonly struct IfcOverviewRaycastHit
+{
+    public Vector3 Point { get; }
+    public Vector3 Normal { get; }
+    public float Distance { get; }
+    public IfcElementMetadata Metadata { get; }
+
+    public IfcOverviewRaycastHit(
+        Vector3 point,
+        Vector3 normal,
+        float distance,
+        IfcElementMetadata metadata)
+    {
+        Point = point;
+        Normal = normal;
+        Distance = distance;
+        Metadata = metadata;
     }
 }
 
@@ -111,6 +141,9 @@ public sealed class IfcStreamedModel : MonoBehaviour
 {
     private const int BinaryItemsPerYield = 16_384;
     private const int MaximumArrayCount = 100_000_000;
+    private const int MaximumPooledFragments = 256;
+    private const int MaximumUnloadsPerFrame = 64;
+    private const double MaximumUnloadMillisecondsPerFrame = 2.5d;
     private const float ForcedElementSeconds = 8f;
     private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
     private static readonly int ColorId = Shader.PropertyToID("_Color");
@@ -166,8 +199,24 @@ public sealed class IfcStreamedModel : MonoBehaviour
         public Vector2[] Uvs;
         public Vector4[] Tangents;
         public int[][] SubMeshes;
-        public Material[] Materials;
+        public int[] StyleLabels;
+        public int[] TriangleProductLabels;
+        public double DecodeMilliseconds;
     }
+
+    private readonly struct PendingUnload
+    {
+        public IfcStreamMeshRecord Record { get; }
+        public CellState Cell { get; }
+
+        public PendingUnload(IfcStreamMeshRecord record, CellState cell)
+        {
+            Record = record;
+            Cell = cell;
+        }
+    }
+
+    private static readonly HashSet<IfcStreamedModel> ActiveModels = new();
 
     private readonly Dictionary<Vector3Int, CellState> cells = new();
     private readonly Dictionary<int, ElementState> elements = new();
@@ -177,19 +226,22 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private readonly List<CellState> unloadScratch = new();
     private readonly List<CellCandidate> candidateScratch = new();
     private readonly Queue<CellState> pendingCells = new();
+    private readonly Queue<PendingUnload> pendingUnloads = new();
+    private readonly Stack<GameObject> fragmentPool = new();
     private readonly Plane[] frustumPlanes = new Plane[6];
     private MaterialPropertyBlock highlightBlock;
 
     private IReadOnlyDictionary<int, Transform> parentsByProduct;
     private IReadOnlyDictionary<int, Material> materialsByStyle;
     private IReadOnlyList<IfcStreamMeshRecord> records;
+    private IReadOnlyList<IfcStreamMeshRecord> overviewRecords;
     private IfcStreamingSettings settings;
     private string cachePath;
     private double metresPerUnit;
     private Camera viewingCamera;
-    private FileStream cacheStream;
-    private BinaryReader cacheReader;
     private Coroutine loadRoutine;
+    private Coroutine overviewLoadRoutine;
+    private CancellationTokenSource lifetimeCancellation;
     private float nextEvaluationTime;
     private float nextDiagnosticsTime;
     private float nextBudgetRetryTime;
@@ -198,6 +250,14 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private int residentRenderers;
     private int loadedFragmentCount;
     private int unloadedFragmentCount;
+    private int cancelledFragmentLoadCount;
+    private long overviewResidentTriangles;
+    private int overviewResidentRenderers;
+    private bool overviewRequested;
+    private double totalDecodeMilliseconds;
+    private double maximumDecodeMilliseconds;
+    private double totalMeshBuildMilliseconds;
+    private double maximumMeshBuildMilliseconds;
     private Bounds modelLocalBounds;
     private bool hasModelBounds;
     private bool registeredWithGlobalBudget;
@@ -210,6 +270,8 @@ public sealed class IfcStreamedModel : MonoBehaviour
     public long ResidentTriangleCount => residentTriangles;
     public long EstimatedResidentBytes => residentBytes;
     public int ResidentRendererCount => residentRenderers;
+    public long OverviewTriangleCount { get; private set; }
+    public long OverviewResidentTriangleCount => overviewResidentTriangles;
 
     private void Awake()
     {
@@ -218,19 +280,32 @@ public sealed class IfcStreamedModel : MonoBehaviour
         highlightBlock = new MaterialPropertyBlock();
     }
 
+    private void OnEnable()
+    {
+        ActiveModels.Add(this);
+    }
+
+    private void OnDisable()
+    {
+        ActiveModels.Remove(this);
+    }
+
     internal void Initialize(
         string geometryCachePath,
         double modelMetresPerUnit,
         IReadOnlyList<IfcStreamMeshRecord> meshRecords,
+        IReadOnlyList<IfcStreamMeshRecord> surfaceOverviewRecords,
         IReadOnlyDictionary<int, Transform> productParents,
         IReadOnlyDictionary<int, Material> styleMaterials,
         IfcStreamingSettings streamingSettings)
     {
         highlightBlock ??= new MaterialPropertyBlock();
         ReleaseAll();
+        lifetimeCancellation = new CancellationTokenSource();
         cachePath = geometryCachePath;
         metresPerUnit = modelMetresPerUnit;
         records = meshRecords;
+        overviewRecords = surfaceOverviewRecords;
         parentsByProduct = productParents;
         materialsByStyle = styleMaterials;
         settings = streamingSettings;
@@ -267,6 +342,11 @@ public sealed class IfcStreamedModel : MonoBehaviour
             TotalTriangleCount += record.TriangleCount;
         }
 
+        foreach (var overviewRecord in overviewRecords)
+        {
+            OverviewTriangleCount += overviewRecord.TriangleCount;
+        }
+
         GlobalBudget.RegisterModel();
         registeredWithGlobalBudget = true;
         IsInitialized = true;
@@ -274,7 +354,8 @@ public sealed class IfcStreamedModel : MonoBehaviour
         nextDiagnosticsTime = Time.unscaledTime + settings.DiagnosticsIntervalSeconds;
         Debug.Log(
             $"IFC streaming index ready for '{name}': {CellCount:N0} cells, " +
-            $"{FragmentCount:N0} fragments, {TotalTriangleCount:N0} triangles on disk.");
+            $"{FragmentCount:N0} detail fragments, {TotalTriangleCount:N0} detail " +
+            $"triangles and {OverviewTriangleCount:N0} surface-overview triangles on disk.");
     }
 
     public bool TryGetElementSummary(
@@ -398,6 +479,154 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
     }
 
+    internal static bool TryRaycastSurfaceOverview(
+        Ray worldRay,
+        out IfcOverviewRaycastHit overviewHit)
+    {
+        overviewHit = default;
+        var found = false;
+        var nearestDistance = float.PositiveInfinity;
+        foreach (var model in ActiveModels)
+        {
+            if (model == null ||
+                !model.IsInitialized ||
+                !model.overviewRequested ||
+                model.overviewRecords == null)
+            {
+                continue;
+            }
+
+            var localOrigin = model.transform.InverseTransformPoint(worldRay.origin);
+            var localPoint = model.transform.InverseTransformPoint(
+                worldRay.origin + worldRay.direction);
+            var localDirection = (localPoint - localOrigin).normalized;
+            if (localDirection.sqrMagnitude <= Mathf.Epsilon)
+            {
+                continue;
+            }
+
+            var localRay = new Ray(localOrigin, localDirection);
+            foreach (var record in model.overviewRecords)
+            {
+                if (!record.Resident ||
+                    record.Renderer == null ||
+                    !record.Renderer.enabled ||
+                    record.SelectionVertices == null ||
+                    record.SelectionSubMeshes == null ||
+                    record.TriangleProductLabels == null ||
+                    !record.LocalBounds.IntersectRay(localRay))
+                {
+                    continue;
+                }
+
+                var triangleOffset = 0;
+                foreach (var indices in record.SelectionSubMeshes)
+                {
+                    for (var index = 0; index + 2 < indices.Length; index += 3)
+                    {
+                        if (triangleOffset >= record.TriangleProductLabels.Length)
+                        {
+                            break;
+                        }
+
+                        var productLabel =
+                            record.TriangleProductLabels[triangleOffset++];
+                        if (!TryIntersectTriangle(
+                                localOrigin,
+                                localDirection,
+                                record.SelectionVertices[indices[index]],
+                                record.SelectionVertices[indices[index + 1]],
+                                record.SelectionVertices[indices[index + 2]],
+                                out var localDistance,
+                                out var localNormal))
+                        {
+                            continue;
+                        }
+
+                        var worldPoint = model.transform.TransformPoint(
+                            localOrigin + localDirection * localDistance);
+                        var worldDistance = Vector3.Distance(
+                            worldRay.origin,
+                            worldPoint);
+                        if (worldDistance >= nearestDistance ||
+                            !model.parentsByProduct.TryGetValue(
+                                productLabel,
+                                out var productTransform) ||
+                            productTransform == null ||
+                            !productTransform.TryGetComponent<IfcElementMetadata>(
+                                out var metadata))
+                        {
+                            continue;
+                        }
+
+                        var worldNormal = model.transform
+                            .TransformDirection(localNormal)
+                            .normalized;
+                        if (Vector3.Dot(worldNormal, worldRay.direction) > 0f)
+                        {
+                            worldNormal = -worldNormal;
+                        }
+
+                        nearestDistance = worldDistance;
+                        overviewHit = new IfcOverviewRaycastHit(
+                            worldPoint,
+                            worldNormal,
+                            worldDistance,
+                            metadata);
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        return found;
+    }
+
+    private static bool TryIntersectTriangle(
+        Vector3 rayOrigin,
+        Vector3 rayDirection,
+        Vector3 vertex0,
+        Vector3 vertex1,
+        Vector3 vertex2,
+        out float distance,
+        out Vector3 normal)
+    {
+        distance = 0f;
+        normal = default;
+        var edge1 = vertex1 - vertex0;
+        var edge2 = vertex2 - vertex0;
+        var cross = Vector3.Cross(rayDirection, edge2);
+        var determinant = Vector3.Dot(edge1, cross);
+        if (Mathf.Abs(determinant) < 0.000001f)
+        {
+            return false;
+        }
+
+        var inverseDeterminant = 1f / determinant;
+        var originOffset = rayOrigin - vertex0;
+        var u = Vector3.Dot(originOffset, cross) * inverseDeterminant;
+        if (u < 0f || u > 1f)
+        {
+            return false;
+        }
+
+        var secondCross = Vector3.Cross(originOffset, edge1);
+        var v = Vector3.Dot(rayDirection, secondCross) * inverseDeterminant;
+        if (v < 0f || u + v > 1f)
+        {
+            return false;
+        }
+
+        distance = Vector3.Dot(edge2, secondCross) * inverseDeterminant;
+        if (distance < 0f)
+        {
+            return false;
+        }
+
+        normal = Vector3.Cross(edge1, edge2).normalized;
+        return true;
+    }
+
     private void Update()
     {
         if (!IsInitialized)
@@ -411,7 +640,9 @@ public sealed class IfcStreamedModel : MonoBehaviour
             nextEvaluationTime = Time.unscaledTime + settings.EvaluationIntervalSeconds;
         }
 
+        ProcessPendingUnloads();
         StartLoadingIfNeeded();
+        StartOverviewLoadingIfNeeded();
         if (settings.EnableDiagnostics && Time.unscaledTime >= nextDiagnosticsTime)
         {
             nextDiagnosticsTime = Time.unscaledTime + settings.DiagnosticsIntervalSeconds;
@@ -445,11 +676,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
             forcedCells.Remove(cell);
         }
 
-        if (hasModelBounds &&
-            forcedCells.Count == 0 &&
+        var modelOutsideDetailRange =
+            hasModelBounds &&
             TransformBounds(transform, modelLocalBounds).SqrDistance(
                 viewingCamera.transform.position) >
-            settings.UnloadDistanceMetres * settings.UnloadDistanceMetres)
+            settings.UnloadDistanceMetres * settings.UnloadDistanceMetres;
+        SetOverviewRequested(modelOutsideDetailRange);
+        if (modelOutsideDetailRange && forcedCells.Count == 0)
         {
             unloadScratch.Clear();
             unloadScratch.AddRange(residentCells);
@@ -500,7 +733,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
         candidateScratch.Sort(
             (left, right) => left.SquaredDistance.CompareTo(right.SquaredDistance));
+        ClearPendingQueue();
         var now = Time.unscaledTime;
+        foreach (var cell in forcedCells)
+        {
+            QueueCell(cell);
+        }
+
         foreach (var candidate in candidateScratch)
         {
             candidate.Cell.LastDesiredTime = now;
@@ -536,6 +775,16 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
     private void QueueCell(CellState cell)
     {
+        foreach (var record in cell.Records)
+        {
+            record.UnloadQueued = false;
+        }
+
+        if (cell.ResidentRecordCount > 0)
+        {
+            residentCells.Add(cell);
+        }
+
         if (cell.Queued || !HasLoadableRecord(cell))
         {
             return;
@@ -543,6 +792,14 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
         cell.Queued = true;
         pendingCells.Enqueue(cell);
+    }
+
+    private void ClearPendingQueue()
+    {
+        while (pendingCells.Count > 0)
+        {
+            pendingCells.Dequeue().Queued = false;
+        }
     }
 
     private bool HasLoadableRecord(CellState cell)
@@ -575,6 +832,179 @@ public sealed class IfcStreamedModel : MonoBehaviour
         {
             loadRoutine = StartCoroutine(LoadPendingCells());
         }
+    }
+
+    private void SetOverviewRequested(bool requested)
+    {
+        if (overviewRequested == requested)
+        {
+            return;
+        }
+
+        overviewRequested = requested;
+        if (requested)
+        {
+            foreach (var record in overviewRecords)
+            {
+                if (record.Renderer != null)
+                {
+                    record.Renderer.enabled = true;
+                }
+            }
+
+            StartOverviewLoadingIfNeeded();
+            return;
+        }
+
+        UnloadOverviewRecords();
+    }
+
+    private void StartOverviewLoadingIfNeeded()
+    {
+        if (!overviewRequested ||
+            overviewLoadRoutine != null ||
+            overviewRecords == null ||
+            overviewRecords.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var record in overviewRecords)
+        {
+            if (!record.Resident && !record.Loading && !record.Failed)
+            {
+                overviewLoadRoutine = StartCoroutine(LoadOverviewRecords());
+                return;
+            }
+        }
+    }
+
+    private IEnumerator LoadOverviewRecords()
+    {
+        foreach (var record in overviewRecords)
+        {
+            if (!overviewRequested)
+            {
+                break;
+            }
+
+            if (record.Resident || record.Loading || record.Failed)
+            {
+                continue;
+            }
+
+            while (overviewRequested &&
+                   !GlobalBudget.TryConsumeLoadSlot(settings.MeshLoadsPerFrame))
+            {
+                yield return null;
+            }
+
+            while (overviewRequested &&
+                   !GlobalBudget.TryReserve(
+                       record.TriangleCount,
+                       record.EstimatedResidentBytes,
+                       settings.MaximumResidentTriangles,
+                       settings.MaximumResidentBytes,
+                       settings.MaximumResidentRenderers))
+            {
+                yield return null;
+            }
+
+            if (!overviewRequested)
+            {
+                break;
+            }
+
+            record.BudgetReserved = true;
+            record.Loading = true;
+            MeshLoadData data = null;
+            Exception loadException = null;
+            CancellationTokenSource loadCancellation = null;
+            Task<MeshLoadData> readTask = null;
+            try
+            {
+                loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    lifetimeCancellation.Token);
+                readTask = ReadMeshRecordAsync(record, loadCancellation.Token);
+            }
+            catch (Exception exception)
+            {
+                loadException = exception;
+            }
+
+            if (readTask != null)
+            {
+                while (!readTask.IsCompleted)
+                {
+                    if (!overviewRequested)
+                    {
+                        loadCancellation.Cancel();
+                    }
+
+                    yield return null;
+                }
+
+                try
+                {
+                    if (!overviewRequested)
+                    {
+                        loadCancellation.Cancel();
+                    }
+
+                    data = readTask.GetAwaiter().GetResult();
+                    loadCancellation.Token.ThrowIfCancellationRequested();
+                }
+                catch (Exception exception)
+                {
+                    loadException = exception;
+                }
+            }
+
+            loadCancellation?.Dispose();
+            if (loadException != null || data == null)
+            {
+                record.Loading = false;
+                var cancelled = loadException is OperationCanceledException;
+                record.Failed = !cancelled;
+                ReleaseReservation(record);
+                if (!cancelled)
+                {
+                    Debug.LogError(
+                        $"Could not load IFC surface overview at {record.Cell}: " +
+                        (loadException?.Message ?? "No mesh data was read."));
+                }
+
+                continue;
+            }
+
+            try
+            {
+                var buildTimer = Stopwatch.StartNew();
+                CreateOverviewRecord(record, data);
+                buildTimer.Stop();
+                totalDecodeMilliseconds += data.DecodeMilliseconds;
+                maximumDecodeMilliseconds = Math.Max(
+                    maximumDecodeMilliseconds,
+                    data.DecodeMilliseconds);
+                totalMeshBuildMilliseconds += buildTimer.Elapsed.TotalMilliseconds;
+                maximumMeshBuildMilliseconds = Math.Max(
+                    maximumMeshBuildMilliseconds,
+                    buildTimer.Elapsed.TotalMilliseconds);
+            }
+            catch (Exception exception)
+            {
+                record.Loading = false;
+                record.Failed = true;
+                ReleaseReservation(record);
+                Debug.LogError(
+                    $"Could not create IFC surface-overview mesh at " +
+                    $"{record.Cell}: {exception.Message}");
+            }
+
+            yield return null;
+        }
+
+        overviewLoadRoutine = null;
     }
 
     private IEnumerator LoadPendingCells()
@@ -617,72 +1047,96 @@ public sealed class IfcStreamedModel : MonoBehaviour
                     break;
                 }
 
+                record.BudgetReserved = true;
                 record.Loading = true;
                 MeshLoadData data = null;
                 Exception loadException = null;
-                IEnumerator readRoutine = null;
+                CancellationTokenSource loadCancellation = null;
+                Task<MeshLoadData> readTask = null;
                 try
                 {
-                    readRoutine = ReadMeshRecord(record, value => data = value);
+                    loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                        lifetimeCancellation.Token);
+                    readTask = ReadMeshRecordAsync(record, loadCancellation.Token);
                 }
                 catch (Exception exception)
                 {
                     loadException = exception;
                 }
 
-                if (readRoutine != null)
+                if (readTask != null)
                 {
-                    while (true)
+                    while (!readTask.IsCompleted)
                     {
-                        bool hasNext;
-                        try
+                        if (!IsWanted(cell))
                         {
-                            hasNext = readRoutine.MoveNext();
-                        }
-                        catch (Exception exception)
-                        {
-                            loadException = exception;
-                            break;
+                            loadCancellation.Cancel();
                         }
 
-                        if (!hasNext)
+                        yield return null;
+                    }
+
+                    try
+                    {
+                        if (!IsWanted(cell))
                         {
-                            break;
+                            loadCancellation.Cancel();
                         }
 
-                        yield return readRoutine.Current;
+                        data = readTask.GetAwaiter().GetResult();
+                        loadCancellation.Token.ThrowIfCancellationRequested();
+                    }
+                    catch (Exception exception)
+                    {
+                        loadException = exception;
                     }
                 }
+
+                loadCancellation?.Dispose();
 
                 if (loadException != null || data == null)
                 {
                     record.Loading = false;
-                    record.Failed = true;
-                    GlobalBudget.Release(
-                        record.TriangleCount,
-                        record.EstimatedResidentBytes,
-                        1);
-                    Debug.LogError(
-                        $"Could not stream IFC fragment at {record.Cell}: " +
-                        (loadException?.Message ?? "No mesh data was read."));
+                    var cancelled = loadException is OperationCanceledException;
+                    record.Failed = !cancelled;
+                    ReleaseReservation(record);
+                    if (cancelled)
+                    {
+                        cancelledFragmentLoadCount++;
+                    }
+                    else
+                    {
+                        Debug.LogError(
+                            $"Could not stream IFC fragment at {record.Cell}: " +
+                            (loadException?.Message ?? "No mesh data was read."));
+                    }
+
                     continue;
                 }
+
+                totalDecodeMilliseconds += data.DecodeMilliseconds;
+                maximumDecodeMilliseconds = Math.Max(
+                    maximumDecodeMilliseconds,
+                    data.DecodeMilliseconds);
 
                 try
                 {
                     using (LoadMarker.Auto())
                     {
+                        var buildTimer = Stopwatch.StartNew();
                         CreateResidentRecord(record, data, element, cell);
+                        buildTimer.Stop();
+                        totalMeshBuildMilliseconds += buildTimer.Elapsed.TotalMilliseconds;
+                        maximumMeshBuildMilliseconds = Math.Max(
+                            maximumMeshBuildMilliseconds,
+                            buildTimer.Elapsed.TotalMilliseconds);
                     }
                 }
                 catch (Exception exception)
                 {
                     record.Loading = false;
                     record.Failed = true;
-                    GlobalBudget.Release(
-                        record.TriangleCount,
-                        record.EstimatedResidentBytes,
-                        1);
+                    ReleaseReservation(record);
                     Debug.LogError(
                         $"Could not create Unity mesh for IFC fragment at " +
                         $"{record.Cell}: {exception.Message}");
@@ -706,20 +1160,48 @@ public sealed class IfcStreamedModel : MonoBehaviour
         loadRoutine = null;
     }
 
-    private IEnumerator ReadMeshRecord(
+    private Task<MeshLoadData> ReadMeshRecordAsync(
         IfcStreamMeshRecord record,
-        Action<MeshLoadData> completed)
+        CancellationToken cancellationToken)
     {
-        EnsureReader();
-        cacheStream.Position = record.PayloadOffset;
-        var objectName = ReadSafeString(cacheReader);
-        var productLabel = cacheReader.ReadInt32();
+        var path = cachePath;
+        var importUvs = settings.ImportTextureCoordinates;
+        var importMeshTangents = settings.ImportTangents;
+        return Task.Run(
+            () => ReadMeshRecordWorker(
+                path,
+                record,
+                importUvs,
+                importMeshTangents,
+                cancellationToken),
+            cancellationToken);
+    }
+
+    private static MeshLoadData ReadMeshRecordWorker(
+        string path,
+        IfcStreamMeshRecord record,
+        bool importUvs,
+        bool importMeshTangents,
+        CancellationToken cancellationToken)
+    {
+        var timer = Stopwatch.StartNew();
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.RandomAccess);
+        using var reader = new BinaryReader(stream, Encoding.UTF8, false);
+        stream.Position = record.PayloadOffset;
+        var objectName = ReadSafeString(reader);
+        var productLabel = reader.ReadInt32();
         if (productLabel != record.ProductLabel)
         {
             throw new InvalidDataException("The IFC stream index does not match its payload.");
         }
 
-        var vertexCount = ReadCount(cacheReader, "vertex");
+        var vertexCount = ReadCount(reader, "vertex");
         if (vertexCount != record.VertexCount)
         {
             throw new InvalidDataException("The IFC vertex count changed after indexing.");
@@ -729,40 +1211,45 @@ public sealed class IfcStreamedModel : MonoBehaviour
         for (var index = 0; index < vertexCount; index++)
         {
             vertices[index] = new Vector3(
-                cacheReader.ReadSingle(),
-                cacheReader.ReadSingle(),
-                cacheReader.ReadSingle());
+                reader.ReadSingle(),
+                reader.ReadSingle(),
+                reader.ReadSingle());
             (vertices[index].y, vertices[index].z) =
                 (vertices[index].z, vertices[index].y);
             if ((index + 1) % BinaryItemsPerYield == 0)
             {
-                yield return null;
+                cancellationToken.ThrowIfCancellationRequested();
             }
         }
 
-        var normalCount = ReadChannelCount(cacheReader, vertexCount, "normal");
+        var normalCount = ReadChannelCount(reader, vertexCount, "normal");
         var normals = new Vector3[normalCount];
         for (var index = 0; index < normalCount; index++)
         {
             normals[index] = new Vector3(
-                cacheReader.ReadSingle(),
-                cacheReader.ReadSingle(),
-                cacheReader.ReadSingle());
+                reader.ReadSingle(),
+                reader.ReadSingle(),
+                reader.ReadSingle());
             (normals[index].y, normals[index].z) =
                 (normals[index].z, normals[index].y);
-            normals[index].Normalize();
+            var lengthSquared = normals[index].sqrMagnitude;
+            if (lengthSquared > 1e-20f)
+            {
+                normals[index] *= 1f / (float)Math.Sqrt(lengthSquared);
+            }
+
             if ((index + 1) % BinaryItemsPerYield == 0)
             {
-                yield return null;
+                cancellationToken.ThrowIfCancellationRequested();
             }
         }
 
-        var uvCount = ReadChannelCount(cacheReader, vertexCount, "UV");
-        var uvs = settings.ImportTextureCoordinates ? new Vector2[uvCount] : null;
+        var uvCount = ReadChannelCount(reader, vertexCount, "UV");
+        var uvs = importUvs ? new Vector2[uvCount] : null;
         for (var index = 0; index < uvCount; index++)
         {
-            var x = cacheReader.ReadSingle();
-            var y = cacheReader.ReadSingle();
+            var x = reader.ReadSingle();
+            var y = reader.ReadSingle();
             if (uvs != null)
             {
                 uvs[index] = new Vector2(x, y);
@@ -770,18 +1257,18 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
             if ((index + 1) % BinaryItemsPerYield == 0)
             {
-                yield return null;
+                cancellationToken.ThrowIfCancellationRequested();
             }
         }
 
-        var tangentCount = ReadChannelCount(cacheReader, vertexCount, "tangent");
-        var tangents = settings.ImportTangents ? new Vector4[tangentCount] : null;
+        var tangentCount = ReadChannelCount(reader, vertexCount, "tangent");
+        var tangents = importMeshTangents ? new Vector4[tangentCount] : null;
         for (var index = 0; index < tangentCount; index++)
         {
-            var x = cacheReader.ReadSingle();
-            var y = cacheReader.ReadSingle();
-            var z = cacheReader.ReadSingle();
-            var w = cacheReader.ReadSingle();
+            var x = reader.ReadSingle();
+            var y = reader.ReadSingle();
+            var z = reader.ReadSingle();
+            var w = reader.ReadSingle();
             if (tangents != null)
             {
                 tangents[index] = new Vector4(x, z, y, -w);
@@ -789,23 +1276,23 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
             if ((index + 1) % BinaryItemsPerYield == 0)
             {
-                yield return null;
+                cancellationToken.ThrowIfCancellationRequested();
             }
         }
 
-        var subMeshCount = ReadCount(cacheReader, "sub-mesh");
+        var subMeshCount = ReadCount(reader, "sub-mesh");
         if (subMeshCount == 0)
         {
             throw new InvalidDataException("An IFC fragment has no sub-meshes.");
         }
 
         var subMeshes = new int[subMeshCount][];
-        var materials = new Material[subMeshCount];
+        var styleLabels = new int[subMeshCount];
         var totalIndexCount = 0;
         for (var subMesh = 0; subMesh < subMeshCount; subMesh++)
         {
-            var styleLabel = cacheReader.ReadInt32();
-            var indexCount = ReadCount(cacheReader, "index");
+            styleLabels[subMesh] = reader.ReadInt32();
+            var indexCount = ReadCount(reader, "index");
             if (indexCount % 3 != 0)
             {
                 throw new InvalidDataException("An IFC fragment has non-triangular indices.");
@@ -815,7 +1302,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
             var indices = new int[indexCount];
             for (var index = 0; index < indexCount; index++)
             {
-                indices[index] = cacheReader.ReadInt32();
+                indices[index] = reader.ReadInt32();
                 if (indices[index] < 0 || indices[index] >= vertexCount)
                 {
                     throw new InvalidDataException("An IFC fragment index is out of range.");
@@ -823,7 +1310,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
                 if ((index + 1) % BinaryItemsPerYield == 0)
                 {
-                    yield return null;
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
             }
 
@@ -834,12 +1321,6 @@ public sealed class IfcStreamedModel : MonoBehaviour
             }
 
             subMeshes[subMesh] = indices;
-            if (!materialsByStyle.TryGetValue(styleLabel, out var material))
-            {
-                materialsByStyle.TryGetValue(0, out material);
-            }
-
-            materials[subMesh] = material;
         }
 
         if (totalIndexCount != record.IndexCount)
@@ -847,7 +1328,30 @@ public sealed class IfcStreamedModel : MonoBehaviour
             throw new InvalidDataException("The IFC index count changed after indexing.");
         }
 
-        completed(new MeshLoadData
+        int[] triangleProductLabels = null;
+        if (record.IsOverview)
+        {
+            var productCount = ReadCount(reader, "overview product");
+            if (productCount != record.TriangleCount)
+            {
+                throw new InvalidDataException(
+                    "The IFC surface-overview product map does not match its triangles.");
+            }
+
+            triangleProductLabels = new int[productCount];
+            for (var index = 0; index < productCount; index++)
+            {
+                triangleProductLabels[index] = reader.ReadInt32();
+                if ((index + 1) % BinaryItemsPerYield == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        timer.Stop();
+        return new MeshLoadData
         {
             Name = objectName,
             ProductLabel = productLabel,
@@ -856,8 +1360,10 @@ public sealed class IfcStreamedModel : MonoBehaviour
             Uvs = uvs,
             Tangents = tangents,
             SubMeshes = subMeshes,
-            Materials = materials
-        });
+            StyleLabels = styleLabels,
+            TriangleProductLabels = triangleProductLabels,
+            DecodeMilliseconds = timer.Elapsed.TotalMilliseconds
+        };
     }
 
     private void CreateResidentRecord(
@@ -902,36 +1408,44 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
         mesh.RecalculateBounds();
 
-        var fragment = new GameObject(data.Name);
         var parent = parentsByProduct.TryGetValue(data.ProductLabel, out var productParent)
             ? productParent
             : transform;
-        fragment.transform.SetParent(parent, false);
-        fragment.AddComponent<MeshFilter>().sharedMesh = mesh;
-        var renderer = fragment.AddComponent<MeshRenderer>();
-        renderer.sharedMaterials = data.Materials;
+        var fragment = AcquireFragment(data.Name, parent);
+        var meshFilter = fragment.GetComponent<MeshFilter>();
+        meshFilter.sharedMesh = mesh;
+        var renderer = fragment.GetComponent<MeshRenderer>();
+        var materials = new Material[data.StyleLabels.Length];
+        for (var index = 0; index < materials.Length; index++)
+        {
+            if (!materialsByStyle.TryGetValue(data.StyleLabels[index], out materials[index]))
+            {
+                materialsByStyle.TryGetValue(0, out materials[index]);
+            }
+        }
+
+        renderer.sharedMaterials = materials;
         renderer.enabled = element.Visible;
 
         var keepReadable = false;
+        var boundsCollider = fragment.GetComponent<BoxCollider>();
         if (settings.GenerateMeshColliders)
         {
             var hasUsableColliderTriangle = ContainsUsableColliderTriangle(
                 data.Vertices,
                 data.SubMeshes);
-            if (hasUsableColliderTriangle &&
-                record.TriangleCount <= settings.MaximumMeshColliderTriangles)
+            if (hasUsableColliderTriangle)
             {
-                var collider = fragment.AddComponent<MeshCollider>();
-                collider.cookingOptions = MeshColliderCookingOptions.UseFastMidphase;
-                collider.sharedMesh = mesh;
-            }
-            else if (hasUsableColliderTriangle)
-            {
-                var collider = fragment.AddComponent<BoxCollider>();
-                collider.center = mesh.bounds.center;
-                collider.size = mesh.bounds.size;
+                boundsCollider.center = mesh.bounds.center;
+                boundsCollider.size = mesh.bounds.size;
+                boundsCollider.enabled = true;
                 keepReadable = true;
             }
+        }
+
+        if (!keepReadable)
+        {
+            boundsCollider.enabled = false;
         }
 
         if (settings.ReleaseCpuMeshData && !keepReadable)
@@ -952,6 +1466,91 @@ public sealed class IfcStreamedModel : MonoBehaviour
         residentRenderers++;
         loadedFragmentCount++;
         ApplyHighlight(renderer, element.Highlighted);
+    }
+
+    private void CreateOverviewRecord(
+        IfcStreamMeshRecord record,
+        MeshLoadData data)
+    {
+        if (data.TriangleProductLabels == null ||
+            data.TriangleProductLabels.Length != record.TriangleCount)
+        {
+            throw new InvalidDataException(
+                "The IFC surface overview is missing its product identity map.");
+        }
+
+        var mesh = new Mesh
+        {
+            name = data.Name,
+            indexFormat = data.Vertices.Length > ushort.MaxValue
+                ? IndexFormat.UInt32
+                : IndexFormat.UInt16,
+            vertices = data.Vertices,
+            subMeshCount = data.SubMeshes.Length
+        };
+        if (data.Normals.Length == data.Vertices.Length)
+        {
+            mesh.normals = data.Normals;
+        }
+
+        for (var subMesh = 0; subMesh < data.SubMeshes.Length; subMesh++)
+        {
+            mesh.SetTriangles(data.SubMeshes[subMesh], subMesh, false);
+        }
+
+        if (data.Normals.Length != data.Vertices.Length)
+        {
+            mesh.RecalculateNormals();
+        }
+
+        mesh.RecalculateBounds();
+        var fragment = AcquireFragment(data.Name, transform);
+        fragment.GetComponent<MeshFilter>().sharedMesh = mesh;
+        fragment.GetComponent<BoxCollider>().enabled = false;
+        var renderer = fragment.GetComponent<MeshRenderer>();
+        var materials = new Material[data.StyleLabels.Length];
+        for (var index = 0; index < materials.Length; index++)
+        {
+            if (!materialsByStyle.TryGetValue(data.StyleLabels[index], out materials[index]))
+            {
+                materialsByStyle.TryGetValue(0, out materials[index]);
+            }
+        }
+
+        renderer.sharedMaterials = materials;
+        renderer.enabled = overviewRequested;
+        record.Mesh = mesh;
+        record.Renderer = renderer;
+        record.RuntimeObject = fragment;
+        record.SelectionVertices = data.Vertices;
+        record.SelectionSubMeshes = data.SubMeshes;
+        record.TriangleProductLabels = data.TriangleProductLabels;
+        record.Loading = false;
+        record.Resident = true;
+        overviewResidentTriangles += record.TriangleCount;
+        overviewResidentRenderers++;
+    }
+
+    private GameObject AcquireFragment(string objectName, Transform parent)
+    {
+        GameObject fragment;
+        if (fragmentPool.Count > 0)
+        {
+            fragment = fragmentPool.Pop();
+            fragment.name = objectName;
+        }
+        else
+        {
+            fragment = new GameObject(objectName);
+            fragment.AddComponent<MeshFilter>();
+            fragment.AddComponent<MeshRenderer>();
+            var collider = fragment.AddComponent<BoxCollider>();
+            collider.enabled = false;
+        }
+
+        fragment.transform.SetParent(parent, false);
+        fragment.SetActive(true);
+        return fragment;
     }
 
     private static bool ContainsUsableColliderTriangle(
@@ -994,23 +1593,95 @@ public sealed class IfcStreamedModel : MonoBehaviour
     {
         foreach (var record in cell.Records)
         {
-            UnloadRecord(record, cell);
+            // An in-flight read owns its reservation and observes IsWanted on
+            // every frame. Let that coroutine cancel itself instead of racing
+            // a newly desired cell against a queued unload.
+            if (!record.Resident || record.UnloadQueued)
+            {
+                continue;
+            }
+
+            record.UnloadQueued = true;
+            pendingUnloads.Enqueue(new PendingUnload(record, cell));
         }
 
         residentCells.Remove(cell);
     }
 
+    private void ProcessPendingUnloads()
+    {
+        if (pendingUnloads.Count == 0)
+        {
+            return;
+        }
+
+        var timer = Stopwatch.StartNew();
+        var processed = 0;
+        while (pendingUnloads.Count > 0 && processed < MaximumUnloadsPerFrame)
+        {
+            var pending = pendingUnloads.Dequeue();
+            if (!pending.Record.UnloadQueued)
+            {
+                continue;
+            }
+
+            pending.Record.UnloadQueued = false;
+            UnloadRecord(pending.Record, pending.Cell);
+            processed++;
+            if (timer.Elapsed.TotalMilliseconds >= MaximumUnloadMillisecondsPerFrame)
+            {
+                break;
+            }
+        }
+    }
+
+    private void UnloadOverviewRecords()
+    {
+        if (overviewRecords == null)
+        {
+            return;
+        }
+
+        foreach (var record in overviewRecords)
+        {
+            if (!record.Resident)
+            {
+                if (record.Loading)
+                {
+                    record.Loading = false;
+                    ReleaseReservation(record);
+                }
+
+                continue;
+            }
+
+            ReturnFragment(record.RuntimeObject);
+            DestroyOwned(record.Mesh);
+            record.RuntimeObject = null;
+            record.Mesh = null;
+            record.Renderer = null;
+            record.SelectionVertices = null;
+            record.SelectionSubMeshes = null;
+            record.TriangleProductLabels = null;
+            record.Loading = false;
+            record.Resident = false;
+            overviewResidentTriangles = Math.Max(
+                0L,
+                overviewResidentTriangles - record.TriangleCount);
+            overviewResidentRenderers = Mathf.Max(0, overviewResidentRenderers - 1);
+            ReleaseReservation(record);
+        }
+    }
+
     private void UnloadRecord(IfcStreamMeshRecord record, CellState cell)
     {
+        record.UnloadQueued = false;
         if (!record.Resident)
         {
             if (record.Loading)
             {
                 record.Loading = false;
-                GlobalBudget.Release(
-                    record.TriangleCount,
-                    record.EstimatedResidentBytes,
-                    1);
+                ReleaseReservation(record);
             }
 
             return;
@@ -1021,7 +1692,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
             element.Renderers.Remove(record.Renderer);
         }
 
-        DestroyOwned(record.RuntimeObject);
+        ReturnFragment(record.RuntimeObject);
         DestroyOwned(record.Mesh);
         record.RuntimeObject = null;
         record.Mesh = null;
@@ -1033,10 +1704,48 @@ public sealed class IfcStreamedModel : MonoBehaviour
         residentBytes -= record.EstimatedResidentBytes;
         residentRenderers = Mathf.Max(0, residentRenderers - 1);
         unloadedFragmentCount++;
+        ReleaseReservation(record);
+    }
+
+    private static void ReleaseReservation(IfcStreamMeshRecord record)
+    {
+        if (!record.BudgetReserved)
+        {
+            return;
+        }
+
+        record.BudgetReserved = false;
         GlobalBudget.Release(
             record.TriangleCount,
             record.EstimatedResidentBytes,
             1);
+    }
+
+    private void ReturnFragment(GameObject fragment)
+    {
+        if (fragment == null)
+        {
+            return;
+        }
+
+        var renderer = fragment.GetComponent<MeshRenderer>();
+        renderer.SetPropertyBlock(null);
+        renderer.enabled = false;
+        renderer.sharedMaterials = Array.Empty<Material>();
+        fragment.GetComponent<MeshFilter>().sharedMesh = null;
+        fragment.GetComponent<BoxCollider>().enabled = false;
+        fragment.transform.SetParent(transform, false);
+        fragment.SetActive(false);
+        if (fragmentPool.Count < Math.Min(
+                MaximumPooledFragments,
+                settings.MaximumResidentRenderers))
+        {
+            fragmentPool.Push(fragment);
+        }
+        else
+        {
+            DestroyOwned(fragment);
+        }
     }
 
     private void ApplyHighlight(Renderer renderer, bool highlighted)
@@ -1068,33 +1777,27 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
     }
 
-    private void EnsureReader()
-    {
-        if (cacheReader != null)
-        {
-            return;
-        }
-
-        cacheStream = new FileStream(
-            cachePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            1024 * 1024,
-            FileOptions.RandomAccess);
-        cacheReader = new BinaryReader(cacheStream, Encoding.UTF8, true);
-    }
-
     private void LogDiagnostics()
     {
         var global = GlobalBudget.GetSnapshot();
+        var completedLoads = Math.Max(1, loadedFragmentCount);
         Debug.Log(
             $"IFC streaming '{name}': {residentRenderers:N0}/{FragmentCount:N0} " +
             $"fragments resident, {residentTriangles:N0}/{TotalTriangleCount:N0} triangles, " +
+            $"overview {overviewResidentRenderers:N0} renderers / " +
+            $"{overviewResidentTriangles:N0}/{OverviewTriangleCount:N0} triangles " +
+            $"({(overviewRequested ? "visible" : "inactive")}), " +
             $"{residentBytes / (1024f * 1024f):F1} MiB estimated mesh memory; " +
             $"global {global.Renderers:N0} renderers, {global.Triangles:N0} triangles, " +
             $"{global.Bytes / (1024f * 1024f):F1} MiB; " +
-            $"loaded/unloaded {loadedFragmentCount:N0}/{unloadedFragmentCount:N0}.");
+            $"queue/pool {pendingCells.Count:N0}/{fragmentPool.Count:N0}, " +
+            $"unload queue {pendingUnloads.Count:N0}, " +
+            $"loaded/unloaded/cancelled {loadedFragmentCount:N0}/" +
+            $"{unloadedFragmentCount:N0}/{cancelledFragmentLoadCount:N0}; " +
+            $"decode avg/max {totalDecodeMilliseconds / completedLoads:F2}/" +
+            $"{maximumDecodeMilliseconds:F2} ms, mesh build avg/max " +
+            $"{totalMeshBuildMilliseconds / completedLoads:F2}/" +
+            $"{maximumMeshBuildMilliseconds:F2} ms.");
     }
 
     private void ReleaseAll()
@@ -1105,6 +1808,15 @@ public sealed class IfcStreamedModel : MonoBehaviour
             loadRoutine = null;
         }
 
+        if (overviewLoadRoutine != null)
+        {
+            StopCoroutine(overviewLoadRoutine);
+            overviewLoadRoutine = null;
+        }
+
+        lifetimeCancellation?.Cancel();
+        UnloadOverviewRecords();
+
         foreach (var cell in cells.Values)
         {
             foreach (var record in cell.Records)
@@ -1113,22 +1825,36 @@ public sealed class IfcStreamedModel : MonoBehaviour
             }
         }
 
-        cacheReader?.Dispose();
-        cacheStream?.Dispose();
-        cacheReader = null;
-        cacheStream = null;
+        lifetimeCancellation?.Dispose();
+        lifetimeCancellation = null;
+        while (fragmentPool.Count > 0)
+        {
+            DestroyOwned(fragmentPool.Pop());
+        }
         cells.Clear();
         elements.Clear();
         desiredCells.Clear();
         residentCells.Clear();
         forcedCells.Clear();
         pendingCells.Clear();
+        pendingUnloads.Clear();
         candidateScratch.Clear();
         unloadScratch.Clear();
         TotalTriangleCount = 0;
+        OverviewTriangleCount = 0;
         residentTriangles = 0;
         residentBytes = 0;
         residentRenderers = 0;
+        overviewResidentTriangles = 0;
+        overviewResidentRenderers = 0;
+        overviewRequested = false;
+        loadedFragmentCount = 0;
+        unloadedFragmentCount = 0;
+        cancelledFragmentLoadCount = 0;
+        totalDecodeMilliseconds = 0d;
+        maximumDecodeMilliseconds = 0d;
+        totalMeshBuildMilliseconds = 0d;
+        maximumMeshBuildMilliseconds = 0d;
         modelLocalBounds = default;
         hasModelBounds = false;
         IsInitialized = false;

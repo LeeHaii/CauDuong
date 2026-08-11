@@ -15,7 +15,7 @@ public sealed class XbimIfcLoader : MonoBehaviour
 {
     private const uint MeshFileMagic = 0x4D494258;
     private const int LegacyRawMeshFileVersion = 2;
-    private const int RawMeshFileVersion = 4;
+    private const int RawMeshFileVersion = 5;
     private const int OptimizedMeshFileVersion = 3;
     private const int BinaryItemsPerYield = 16_384;
     private const int OptimizationRevision = 2;
@@ -29,8 +29,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [SerializeField] private Material defaultMaterial;
     [Tooltip("Render both front and back faces. Disable to use normal back-face culling for higher fill-rate performance.")]
     [SerializeField] private bool renderDoubleSided = true;
+    [Tooltip("Adds lightweight bounds colliders for IFC picking. Exact surface confirmation uses the readable render mesh, avoiding synchronous PhysX mesh cooking.")]
     [SerializeField] private bool generateMeshColliders;
-    [Tooltip("Larger meshes use a bounds collider to avoid long synchronous MeshCollider cooking stalls.")]
+    [Tooltip("Retained for serialized compatibility. Streamed IFC geometry no longer cooks MeshColliders during loading.")]
     [SerializeField, Min(1_000)] private int maximumMeshColliderTriangles = 10_000;
     [Tooltip("Combines IFC renderers at runtime. Keep disabled for large models because Unity performs each model combine synchronously on the main thread.")]
     [SerializeField] private bool enableRuntimeStaticBatching;
@@ -82,7 +83,15 @@ public sealed class XbimIfcLoader : MonoBehaviour
     [Tooltip("Geometry is fragmented into persistent metre-sized cells during xBIM conversion.")]
     [SerializeField, Min(1f)] private float streamingCellSizeMetres = 100f;
     [Tooltip("Hard upper bound for one independently streamable fragment.")]
-    [SerializeField, Min(1_000)] private int maximumTrianglesPerFragment = 100_000;
+    [SerializeField, Min(1_000)] private int maximumTrianglesPerFragment = 50_000;
+    [Tooltip("Maximum triangle target for the surface-derived whole-model overview. No bounds boxes or generated slabs are used.")]
+    [SerializeField, Min(10_000)] private int overviewTargetTriangles = 200_000;
+    [Tooltip("Initial clustering size for overview interior vertices. The converter increases it only when needed to meet the overview budget.")]
+    [SerializeField, Min(0.05f)] private float overviewClusterSizeMetres = 1f;
+    [Tooltip("Finer clustering applied to open mesh boundaries so distant silhouettes remain recognizable.")]
+    [SerializeField, Min(0.01f)] private float overviewBoundaryClusterSizeMetres = 0.25f;
+    [Tooltip("Overview fragments are grouped into large regions without replacing their source-derived surfaces.")]
+    [SerializeField, Min(10f)] private float overviewRegionSizeMetres = 1_000f;
     [Tooltip("Only cells in the camera frustum within this distance become resident.")]
     [SerializeField, Min(1f)] private float streamingLoadDistanceMetres = 750f;
     [SerializeField, Min(1f)] private float streamingUnloadDistanceMetres = 1_000f;
@@ -476,7 +485,10 @@ public sealed class XbimIfcLoader : MonoBehaviour
         {
             var meshFilter = meshFilters[index];
             var mesh = meshFilter.sharedMesh;
-            if (mesh != null && mesh.isReadable)
+            var requiresReadableSelectionMesh =
+                meshFilter.TryGetComponent<BoxCollider>(out var boundsCollider) &&
+                boundsCollider.enabled;
+            if (mesh != null && mesh.isReadable && !requiresReadableSelectionMesh)
             {
                 mesh.UploadMeshData(true);
             }
@@ -942,18 +954,9 @@ public sealed class XbimIfcLoader : MonoBehaviour
 
             if (generateMeshColliders)
             {
-                if (optimizedTriangleCount <= maximumMeshColliderTriangles)
-                {
-                    var meshCollider = element.AddComponent<MeshCollider>();
-                    meshCollider.cookingOptions = MeshColliderCookingOptions.UseFastMidphase;
-                    meshCollider.sharedMesh = mesh;
-                }
-                else
-                {
-                    var boundsCollider = element.AddComponent<BoxCollider>();
-                    boundsCollider.center = mesh.bounds.center;
-                    boundsCollider.size = mesh.bounds.size;
-                }
+                var boundsCollider = element.AddComponent<BoxCollider>();
+                boundsCollider.center = mesh.bounds.center;
+                boundsCollider.size = mesh.bounds.size;
             }
 
             if ((meshIndex + 1) % meshesPerFrame == 0 ||
@@ -1054,90 +1057,33 @@ public sealed class XbimIfcLoader : MonoBehaviour
         LastOptimizedTriangleCount = 0;
         for (var meshIndex = 0; meshIndex < meshCount; meshIndex++)
         {
-            var recordStart = reader.BaseStream.Position;
-            var recordLength = reader.ReadInt64();
-            if (recordLength < 56L ||
-                recordLength > reader.BaseStream.Length - recordStart - sizeof(long))
-            {
-                throw new InvalidDataException(
-                    $"Invalid streamed IFC record length: {recordLength}.");
-            }
-
-            var cellX = reader.ReadInt32();
-            var cellY = reader.ReadInt32();
-            var cellZ = reader.ReadInt32();
-            var minimumX = reader.ReadSingle();
-            var minimumY = reader.ReadSingle();
-            var minimumZ = reader.ReadSingle();
-            var maximumX = reader.ReadSingle();
-            var maximumY = reader.ReadSingle();
-            var maximumZ = reader.ReadSingle();
-            if (!float.IsFinite(minimumX) ||
-                !float.IsFinite(minimumY) ||
-                !float.IsFinite(minimumZ) ||
-                !float.IsFinite(maximumX) ||
-                !float.IsFinite(maximumY) ||
-                !float.IsFinite(maximumZ) ||
-                maximumX < minimumX ||
-                maximumY < minimumY ||
-                maximumZ < minimumZ)
-            {
-                throw new InvalidDataException("A streamed IFC record has invalid bounds.");
-            }
-
-            var triangleCount = reader.ReadInt32();
-            var vertexCount = reader.ReadInt32();
-            var indexCount = reader.ReadInt32();
-            var styleLabel = reader.ReadInt32();
-            var productLabel = reader.ReadInt32();
-            ValidateCount(triangleCount, "triangle");
-            ValidateCount(vertexCount, "vertex");
-            ValidateCount(indexCount, "index");
-            if (triangleCount <= 0 ||
-                vertexCount <= 0 ||
-                indexCount != triangleCount * 3)
-            {
-                throw new InvalidDataException(
-                    "A streamed IFC record has inconsistent geometry counts.");
-            }
-
-            var minimum = new Vector3(minimumX, minimumZ, minimumY);
-            var maximum = new Vector3(maximumX, maximumZ, maximumY);
-            var vertexStride = sizeof(float) * 6L +
-                               (importTextureCoordinates ? sizeof(float) * 2L : 0L) +
-                               (importTangents ? sizeof(float) * 4L : 0L);
-            var meshBufferBytes =
-                (long)vertexCount * vertexStride +
-                (long)indexCount * (vertexCount > ushort.MaxValue
-                    ? sizeof(uint)
-                    : sizeof(ushort));
-            var retainsCpuMeshCopy =
-                !releaseCpuMeshData ||
-                generateMeshColliders &&
-                triangleCount > maximumMeshColliderTriangles;
-            var estimatedBytes = meshBufferBytes * (retainsCpuMeshCopy ? 2L : 1L);
-            records.Add(new IfcStreamMeshRecord
-            {
-                PayloadOffset = reader.BaseStream.Position,
-                Cell = new Vector3Int(cellX, cellZ, cellY),
-                LocalBounds = new Bounds(
-                    (minimum + maximum) * 0.5f,
-                    maximum - minimum),
-                TriangleCount = triangleCount,
-                VertexCount = vertexCount,
-                IndexCount = indexCount,
-                StyleLabel = styleLabel,
-                ProductLabel = productLabel,
-                EstimatedResidentBytes = estimatedBytes
-            });
-            LastSourceTriangleCount += triangleCount;
-            LastOptimizedTriangleCount += triangleCount;
-
-            reader.BaseStream.Position =
-                recordStart + sizeof(long) + recordLength;
+            var record = ReadStreamingRecordHeader(reader, false);
+            records.Add(record);
+            LastSourceTriangleCount += record.TriangleCount;
+            LastOptimizedTriangleCount += record.TriangleCount;
             if ((meshIndex + 1) % 4_096 == 0)
             {
                 SetStatus($"Indexing IFC cells... {meshIndex + 1:N0}/{meshCount:N0}");
+                yield return null;
+            }
+        }
+
+        var overviewCount = reader.ReadInt32();
+        ValidateRecordCount(overviewCount, "overview mesh");
+        var overviewRecords = new List<IfcStreamMeshRecord>(overviewCount);
+        long overviewTriangles = 0;
+        for (var overviewIndex = 0;
+             overviewIndex < overviewCount;
+             overviewIndex++)
+        {
+            var overviewRecord = ReadStreamingRecordHeader(reader, true);
+            overviewRecords.Add(overviewRecord);
+            overviewTriangles += overviewRecord.TriangleCount;
+            if ((overviewIndex + 1) % 512 == 0)
+            {
+                SetStatus(
+                    $"Indexing IFC surface overview... " +
+                    $"{overviewIndex + 1:N0}/{overviewCount:N0}");
                 yield return null;
             }
         }
@@ -1154,6 +1100,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
         modelProperties.Add(new KeyValuePair<string, string>(
             "Stream Fragments",
             meshCount.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Surface Overview Triangles",
+            overviewTriangles.ToString("N0", CultureInfo.InvariantCulture)));
+        modelProperties.Add(new KeyValuePair<string, string>(
+            "Surface Overview Fragments",
+            overviewCount.ToString("N0", CultureInfo.InvariantCulture)));
         modelMetadata.Initialize("IfcModel", string.Empty, 0, modelProperties);
 
         var settings = new IfcStreamingSettings(
@@ -1177,9 +1129,94 @@ public sealed class XbimIfcLoader : MonoBehaviour
             cachePath,
             metresPerUnit,
             records,
+            overviewRecords,
             parentsByProduct,
             materialsByStyle,
             settings);
+    }
+
+    private IfcStreamMeshRecord ReadStreamingRecordHeader(
+        BinaryReader reader,
+        bool isOverview)
+    {
+        var recordStart = reader.BaseStream.Position;
+        var recordLength = reader.ReadInt64();
+        if (recordLength < 56L ||
+            recordLength > reader.BaseStream.Length - recordStart - sizeof(long))
+        {
+            throw new InvalidDataException(
+                $"Invalid streamed IFC record length: {recordLength}.");
+        }
+
+        var cellX = reader.ReadInt32();
+        var cellY = reader.ReadInt32();
+        var cellZ = reader.ReadInt32();
+        var minimumX = reader.ReadSingle();
+        var minimumY = reader.ReadSingle();
+        var minimumZ = reader.ReadSingle();
+        var maximumX = reader.ReadSingle();
+        var maximumY = reader.ReadSingle();
+        var maximumZ = reader.ReadSingle();
+        if (!float.IsFinite(minimumX) ||
+            !float.IsFinite(minimumY) ||
+            !float.IsFinite(minimumZ) ||
+            !float.IsFinite(maximumX) ||
+            !float.IsFinite(maximumY) ||
+            !float.IsFinite(maximumZ) ||
+            maximumX < minimumX ||
+            maximumY < minimumY ||
+            maximumZ < minimumZ)
+        {
+            throw new InvalidDataException("A streamed IFC record has invalid bounds.");
+        }
+
+        var triangleCount = reader.ReadInt32();
+        var vertexCount = reader.ReadInt32();
+        var indexCount = reader.ReadInt32();
+        var styleLabel = reader.ReadInt32();
+        var productLabel = reader.ReadInt32();
+        ValidateCount(triangleCount, "triangle");
+        ValidateCount(vertexCount, "vertex");
+        ValidateCount(indexCount, "index");
+        if (triangleCount <= 0 ||
+            vertexCount <= 0 ||
+            indexCount != triangleCount * 3)
+        {
+            throw new InvalidDataException(
+                "A streamed IFC record has inconsistent geometry counts.");
+        }
+
+        var minimum = new Vector3(minimumX, minimumZ, minimumY);
+        var maximum = new Vector3(maximumX, maximumZ, maximumY);
+        var vertexStride = sizeof(float) * 6L +
+                           (importTextureCoordinates ? sizeof(float) * 2L : 0L) +
+                           (importTangents ? sizeof(float) * 4L : 0L);
+        var meshBufferBytes =
+            (long)vertexCount * vertexStride +
+            (long)indexCount * (vertexCount > ushort.MaxValue
+                ? sizeof(uint)
+                : sizeof(ushort));
+        var retainsCpuMeshCopy =
+            isOverview || !releaseCpuMeshData || generateMeshColliders;
+        var record = new IfcStreamMeshRecord
+        {
+            PayloadOffset = reader.BaseStream.Position,
+            Cell = new Vector3Int(cellX, cellZ, cellY),
+            LocalBounds = new Bounds(
+                (minimum + maximum) * 0.5f,
+                maximum - minimum),
+            TriangleCount = triangleCount,
+            VertexCount = vertexCount,
+            IndexCount = indexCount,
+            StyleLabel = styleLabel,
+            ProductLabel = productLabel,
+            EstimatedResidentBytes =
+                meshBufferBytes * (retainsCpuMeshCopy ? 2L : 1L),
+            IsOverview = isOverview
+        };
+        reader.BaseStream.Position =
+            recordStart + sizeof(long) + recordLength;
+        return record;
     }
 
     private Mesh SimplifyMesh(Mesh sourceMesh, int sourceTriangleCount)
@@ -1764,7 +1801,13 @@ public sealed class XbimIfcLoader : MonoBehaviour
             LinearDeflection.ToString("R", CultureInfo.InvariantCulture),
             AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
             streamingCellSizeMetres.ToString("R", CultureInfo.InvariantCulture),
-            maximumTrianglesPerFragment.ToString(CultureInfo.InvariantCulture));
+            maximumTrianglesPerFragment.ToString(CultureInfo.InvariantCulture),
+            overviewTargetTriangles.ToString(CultureInfo.InvariantCulture),
+            overviewClusterSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            overviewBoundaryClusterSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            overviewRegionSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            importTextureCoordinates.ToString(CultureInfo.InvariantCulture),
+            importTangents.ToString(CultureInfo.InvariantCulture));
     }
 
     private string GetConvertedMeshCachePath(
@@ -1778,6 +1821,12 @@ public sealed class XbimIfcLoader : MonoBehaviour
             AngularDeflection.ToString("R", CultureInfo.InvariantCulture),
             streamingCellSizeMetres.ToString("R", CultureInfo.InvariantCulture),
             maximumTrianglesPerFragment.ToString(CultureInfo.InvariantCulture),
+            overviewTargetTriangles.ToString(CultureInfo.InvariantCulture),
+            overviewClusterSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            overviewBoundaryClusterSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            overviewRegionSizeMetres.ToString("R", CultureInfo.InvariantCulture),
+            importTextureCoordinates,
+            importTangents,
             RawMeshFileVersion.ToString(CultureInfo.InvariantCulture));
         return BuildCachePath(inputPath, cacheDirectory, fingerprint, string.Empty);
     }
