@@ -66,7 +66,7 @@
         </ui:VisualElement>
         <ui:VisualElement name="data-page" class="module-page workspace-page hud-interactive" style="display: none;">
             <ui:VisualElement class="module-topbar workspace-topbar">
-                <ui:Button name="data-home-button" text="‹  Trang Tổng" class="module-back-button"/>
+                <ui:Button name="data-home-button" text="← Trang Chủ" class="module-back-button"/>
                 <ui:VisualElement class="module-header-copy">
                     <ui:Label text="Quản Lý Dữ Liệu" class="workspace-title"/>
                     <ui:Label text="Danh mục mô hình IFC dùng cho báo cáo hạ tầng" class="workspace-subtitle"/>
@@ -129,18 +129,26 @@
             </ui:VisualElement>
         </ui:VisualElement>
         <ui:VisualElement name="field-page" class="module-page workspace-page hud-interactive" style="display: none;">
-            <ui:VisualElement class="module-topbar workspace-topbar">
-                <ui:Button name="field-home-button" text="‹  Trang Tổng" class="module-back-button"/>
-                <ui:VisualElement class="module-header-copy">
-                    <ui:Label text="Quản Lý Hiện Trường" class="workspace-title"/>
-                    <ui:Label text="Ghi nhận hư hỏng và đồng bộ vị trí về báo cáo ArcGIS" class="workspace-subtitle"/>
+            <ui:VisualElement class="module-topbar workspace-topbar field-page-topbar">
+                <ui:Button name="field-home-button" text="← Trang Chủ" class="module-back-button"/>
+                <ui:VisualElement class="field-header-icon">
+                    <ui:Label text="▤" class="field-header-icon-label"/>
+                </ui:VisualElement>
+                <ui:VisualElement class="module-header-copy field-header-copy">
+                    <ui:Label text="Báo cáo Hiện trường" class="workspace-title"/>
+                    <ui:Label name="field-record-count" text="0 báo cáo • ✓ Đã đồng bộ" class="workspace-subtitle field-record-summary"/>
                 </ui:VisualElement>
                 <ui:VisualElement class="workspace-header-actions">
-                    <ui:Label name="field-record-count" text="0 ghi nhận" class="workspace-count-badge"/>
                     <ui:Button name="open-inspection-form-button" text="+  Tạo Ghi Nhận" class="workspace-primary-button"/>
                 </ui:VisualElement>
             </ui:VisualElement>
             <ui:VisualElement class="workspace-content field-workspace-content">
+                <ui:VisualElement class="field-filter-toolbar">
+                    <ui:DropdownField name="field-project-filter" value="Tất cả dự án" class="field-filter-dropdown field-project-filter"/>
+                    <ui:DropdownField name="field-type-filter" value="Tất cả loại cấu kiện" class="field-filter-dropdown field-type-filter"/>
+                    <ui:Button name="field-reload-button" text="↻  Tải lại" class="field-toolbar-button field-reload-button"/>
+                    <ui:Button name="field-points-toggle-button" text="Point 3D Bản đồ: Đang BẬT" class="field-toolbar-button field-points-toggle field-points-toggle-on"/>
+                </ui:VisualElement>
                 <ui:VisualElement class="field-history-panel">
                     <ui:VisualElement class="field-panel-heading-row">
                         <ui:Label text="Bảng Ghi Nhận Hiện Trường" class="field-panel-title"/>
@@ -222,19 +230,19 @@
         <ui:VisualElement name="report-page" picking-mode="Ignore" class="report-page" style="display: none;">
             <ui:VisualElement name="top-toolbar" class="top-toolbar hud-interactive">
                 <ui:VisualElement class="brand-block">
-                    <ui:Label text="P" class="brand-mark"/>
+                    <ui:Label text="↟" class="brand-mark"/>
                     <ui:VisualElement class="brand-copy">
-                        <ui:Label text="BIM-GIS InfraOps" class="brand-title"/>
-                        <ui:Label text="Quản Lý Vận Hành Hạ Tầng Giao Thông" class="brand-subtitle"/>
+                        <ui:Label text="Quản lý vận hành hạ tầng giao thông" class="brand-title"/>
+                        <ui:Label text="BIM • GIS • Báo cáo hiện trường" class="brand-subtitle"/>
                     </ui:VisualElement>
                 </ui:VisualElement>
                 <ui:VisualElement class="toolbar-actions">
+                    <ui:Button name="report-home-button" text="← Trang Chủ" class="toolbar-button toolbar-home-button"/>
                     <ui:DropdownField name="map-source" value="ArcGIS World Street" class="map-dropdown toolbar-secondary" style="padding-left: 0; padding-right: 0; margin-left: 8px;"/>
-                    <ui:Button name="frame-model-button" text="Mô Hình Tuyến Vành Đai 3" class="toolbar-button toolbar-button-primary"/>
-                    <ui:Button name="report-home-button" text="Trang Tổng" class="toolbar-button"/>
-                    <ui:Button name="layer-button" text="Lớp IFC (0)" class="toolbar-button toolbar-button-primary"/>
-                    <ui:Button name="inspection-button" text="Hiện Trường (0)" class="toolbar-button toolbar-secondary"/>
+                    <ui:Button name="frame-model-button" text="Hiển Thị Tất Cả Dự Án" class="toolbar-button toolbar-project-button"/>
+                    <ui:Button name="layer-button" text="Quản Lý Lớp Dữ Liệu (0)" class="toolbar-button toolbar-button-primary"/>
                     <ui:Button name="measure-button" text="Đo Đạc 3D" class="toolbar-button toolbar-secondary"/>
+                    <ui:Button name="inspection-button" text="Điểm Báo Cáo 3D (0)" class="toolbar-button toolbar-inspection-button"/>
                     <ui:Button name="export-button" text="Export &amp; Báo Cáo" class="toolbar-button toolbar-button-export"/>
                 </ui:VisualElement>
             </ui:VisualElement>

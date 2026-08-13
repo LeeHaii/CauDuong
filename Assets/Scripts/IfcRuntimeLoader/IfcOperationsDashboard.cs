@@ -43,6 +43,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
     private readonly Dictionary<IfcElementMetadata, VisualElement> assetRows = new();
     private readonly Dictionary<IfcElementMetadata, IfcAssetRecord> recordsByMetadata = new();
     private readonly Dictionary<Transform, IfcAssetRecord> recordsByGeometry = new();
+    private readonly List<Texture2D> analyticsThumbnailTextures = new();
 
     private UIDocument document;
     private VisualElement root;
@@ -875,7 +876,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
 
         totalCountLabel.text = $"{records.Count:N0} cấu kiện";
         var modelCount = loader?.LoadedModels.Count ?? 0;
-        layerCountButton.text = $"Lớp IFC ({modelCount:N0})";
+        layerCountButton.text = $"Quản Lý Lớp Dữ Liệu ({modelCount:N0})";
         BuildCategoryList();
         UpdateStatusButtons();
 
@@ -1879,7 +1880,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
         PopulateAnalyticsDashboard();
         analyticsOverlay.EnableInClassList("analytics-standalone", standalone);
         var closeButton = root.Q<Button>("close-analytics-button");
-        closeButton.text = standalone ? "Trang Tổng" : "×";
+        closeButton.text = standalone ? "Trang Chủ" : "×";
         closeButton.tooltip = standalone
             ? "Quay lại trang tổng"
             : "Đóng dashboard báo cáo";
@@ -1933,6 +1934,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             return;
         }
 
+        ReleaseAnalyticsThumbnailTextures();
         analyticsRecentInspections.Clear();
         var recent = fieldInspections.Take(5).ToArray();
         if (recent.Length == 0)
@@ -1948,8 +1950,7 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             var row = new VisualElement();
             row.AddToClassList("analytics-recent-row");
 
-            var icon = new Label(string.IsNullOrWhiteSpace(inspection.ImagePath) ? "BC" : "ẢNH");
-            icon.AddToClassList("analytics-recent-icon");
+            var icon = CreateAnalyticsInspectionThumbnail(inspection);
             var copy = new VisualElement();
             copy.AddToClassList("analytics-recent-copy");
             var title = new Label(EmptyFallback(inspection.ElementName, "Ghi nhận hiện trường"));
@@ -1989,6 +1990,59 @@ public sealed partial class IfcOperationsDashboard : MonoBehaviour
             row.Add(actions);
             analyticsRecentInspections.Add(row);
         }
+    }
+
+    private VisualElement CreateAnalyticsInspectionThumbnail(FieldInspectionRecord inspection)
+    {
+        var thumbnail = new VisualElement();
+        thumbnail.AddToClassList("analytics-recent-icon");
+        if (!string.IsNullOrWhiteSpace(inspection.ImagePath) &&
+            File.Exists(inspection.ImagePath))
+        {
+            try
+            {
+                var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+                {
+                    name = $"Inspection thumbnail {inspection.Id}"
+                };
+                if (texture.LoadImage(File.ReadAllBytes(inspection.ImagePath)))
+                {
+                    analyticsThumbnailTextures.Add(texture);
+                    thumbnail.style.backgroundImage = new StyleBackground(texture);
+                    thumbnail.AddToClassList("analytics-recent-icon-image");
+                    thumbnail.tooltip = EmptyFallback(
+                        inspection.ElementName,
+                        "Ảnh báo cáo hiện trường");
+                    return thumbnail;
+                }
+
+                Destroy(texture);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    $"Could not load field report thumbnail '{inspection.ImagePath}': " +
+                    exception.Message);
+            }
+        }
+
+        var placeholder = new Label("BC");
+        placeholder.AddToClassList("analytics-recent-icon-placeholder");
+        thumbnail.Add(placeholder);
+        return thumbnail;
+    }
+
+    private void ReleaseAnalyticsThumbnailTextures()
+    {
+        foreach (var texture in analyticsThumbnailTextures)
+        {
+            if (texture != null)
+            {
+                Destroy(texture);
+            }
+        }
+
+        analyticsThumbnailTextures.Clear();
     }
 
     private void BuildStatusLegend(IReadOnlyList<int> statusCounts)
