@@ -132,6 +132,7 @@ GameObject:
   - component: {fileID: 108368059}
   - component: {fileID: 108368062}
   - component: {fileID: 108368063}
+  - component: {fileID: 108368064}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -284,6 +285,24 @@ MonoBehaviour:
   minPitch: 0
   maxPitch: 90
   dashboardDocument: {fileID: 0}
+--- !u!114 &108368064
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 108368058}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dd9885ba682d64144b3908081b97df89, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ArcGisCursorCoordinateDebugger
+  raycastMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  maximumRayDistance: 500000
+  triggerInteraction: 1
+  mapPlaneElevation: 0
 --- !u!1 &210870370
 GameObject:
   m_ObjectHideFlags: 0
@@ -1196,7 +1215,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::XbimIfcLoader
   modelParent: {fileID: 0}
   defaultMaterial: {fileID: 0}
+  renderDoubleSided: 1
   generateMeshColliders: 1
+  maximumMeshColliderTriangles: 10000
+  enableRuntimeStaticBatching: 0
+  staticBatchSettleSeconds: 8
   linearDeflectionMillimetres: 30
   angularDeflectionDegrees: 60
   simplifyMeshes: 1
@@ -1208,6 +1231,7 @@ MonoBehaviour:
   extremeMeshQuality: 0.3
   broadSurfaceMeshQuality: 0.55
   useQuadricSimplification: 1
+  allowBlockingRuntimeSimplification: 0
   preserveBoundaryEdges: 1
   importTextureCoordinates: 0
   importTangents: 0
@@ -1215,6 +1239,22 @@ MonoBehaviour:
   meshesPerFrame: 16
   sourceTrianglesPerFrame: 40000
   converterTimeoutSeconds: 900
+  streamingCellSizeMetres: 100
+  maximumTrianglesPerFragment: 50000
+  overviewTargetTriangles: 200000
+  overviewClusterSizeMetres: 1
+  overviewBoundaryClusterSizeMetres: 0.25
+  overviewRegionSizeMetres: 1000
+  streamingLoadDistanceMetres: 750
+  streamingUnloadDistanceMetres: 1000
+  invisibleCellRetentionSeconds: 4
+  streamingEvaluationInterval: 0.25
+  maximumResidentTriangles: 4000000
+  maximumResidentMeshMemoryMegabytes: 768
+  maximumResidentRenderers: 3000
+  maximumMeshLoadsPerFrame: 2
+  enableStreamingDiagnostics: 1
+  streamingDiagnosticsIntervalSeconds: 5
 --- !u!4 &1029702757
 Transform:
   m_ObjectHideFlags: 0
@@ -1314,13 +1354,15 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6b254d0dc51f87a41aa0a4c3ddd6d023, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ArcGisMapLoader
   geoPositionExtractor: {fileID: 0}
   viewingCamera: {fileID: 0}
-  apiKey:
+  apiKey: 
   initialBasemap: ArcGIS World Street
   modelFrameCorrectionEuler: {x: -90, y: 0, z: 0}
+  arcGisQualityScalingFactor: 0.6
+  maximumFarClipDistance: 20000
 --- !u!1 &1171116991
 GameObject:
   m_ObjectHideFlags: 0
@@ -1356,7 +1398,7 @@ Light:
   m_InnerSpotAngle: 21.80208
   m_CookieSize2D: {x: 0.5, y: 0.5}
   m_Shadows:
-    m_Type: 2
+    m_Type: 0
     m_Resolution: -1
     m_CustomResolution: -1
     m_Strength: 1

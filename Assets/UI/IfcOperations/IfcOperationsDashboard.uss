@@ -3278,3 +3278,230 @@
     width: 44%;
     min-width: 190px;
 }
+
+/* Compact map workspace toolbar aligned with the supplied operations reference. */
+.report-page .top-toolbar {
+    top: 4px;
+    left: 4px;
+    right: 4px;
+    height: 58px;
+    padding-left: 10px;
+    padding-right: 8px;
+    border-color: #d4dce8;
+    border-radius: 7px;
+    background-color: rgba(255, 255, 255, 0.98);
+}
+
+.report-page .brand-block {
+    min-width: 188px;
+    height: 40px;
+}
+
+.report-page .brand-mark {
+    width: 36px;
+    height: 36px;
+    margin-right: 8px;
+    border-radius: 7px;
+    background-color: #715cf5;
+    font-size: 16px;
+}
+
+.report-page .brand-copy { height: 36px; }
+.report-page .brand-title { height: 22px; font-size: 12px; white-space: nowrap; }
+.report-page .brand-subtitle { height: 13px; font-size: 7px; color: #708099; }
+
+.report-page .toolbar-actions {
+    min-width: 0;
+    flex-wrap: nowrap;
+}
+
+.report-page .toolbar-button,
+.report-page .map-dropdown {
+    height: 34px;
+    min-width: 0;
+    margin-left: 4px;
+    padding-left: 7px;
+    padding-right: 7px;
+    border-radius: 5px;
+    font-size: 8px;
+    white-space: nowrap;
+}
+
+.report-page .toolbar-home-button { width: 74px; }
+.report-page .map-dropdown { width: 126px; }
+.report-page .toolbar-project-button { width: 116px; background-color: #fffdf6; }
+.report-page #layer-button { width: 135px; }
+.report-page #measure-button { width: 76px; }
+.report-page .toolbar-inspection-button {
+    width: 126px;
+    border-color: #11a979;
+    background-color: #e8fbf4;
+    color: #087b59;
+}
+.report-page #export-button { width: 105px; }
+
+.report-page .side-panel {
+    top: 68px;
+}
+
+.dashboard-compact .report-page .toolbar-secondary,
+.dashboard-narrow .report-page .toolbar-secondary {
+    display: flex;
+}
+
+.dashboard-compact .report-page .brand-block,
+.dashboard-narrow .report-page .brand-block {
+    min-width: 174px;
+}
+
+.dashboard-narrow .report-page .brand-copy {
+    display: flex;
+}
+
+.dashboard-narrow .report-page .brand-subtitle {
+    display: none;
+}
+
+/* Field report header and filter row aligned with the supplied reference. */
+.field-page-topbar {
+    height: 64px;
+    padding-left: 8px;
+    padding-right: 12px;
+    background-color: #ffffff;
+}
+
+.field-page-topbar .module-back-button {
+    width: 102px;
+    height: 34px;
+    margin-right: 10px;
+}
+
+.field-header-icon {
+    width: 36px;
+    height: 36px;
+    margin-right: 9px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background-color: #08a776;
+}
+
+.field-header-icon-label {
+    color: #ffffff;
+    font-size: 17px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.field-header-copy .workspace-title {
+    font-size: 15px;
+}
+
+.field-record-summary {
+    margin-top: 1px;
+    color: #13ad79;
+    font-size: 9px;
+}
+
+.field-page-topbar .workspace-header-actions {
+    flex-direction: row;
+    align-items: center;
+}
+
+.field-page-topbar .workspace-primary-button {
+    height: 34px;
+    padding-left: 13px;
+    padding-right: 13px;
+}
+
+.field-workspace-content {
+    padding: 8px;
+}
+
+.field-filter-toolbar {
+    min-height: 46px;
+    flex-direction: row;
+    align-items: center;
+    padding: 6px 8px;
+    border-bottom-width: 1px;
+    border-bottom-color: #d7dfe9;
+    background-color: #ffffff;
+}
+
+.field-filter-dropdown {
+    height: 34px;
+    margin-right: 8px;
+    font-size: 9px;
+}
+
+.field-project-filter { width: 185px; }
+.field-type-filter { width: 176px; }
+
+.field-filter-dropdown .unity-base-popup-field__input {
+    min-height: 34px;
+    padding-left: 10px;
+    padding-right: 8px;
+    border-width: 1px;
+    border-color: #c5d0dd;
+    border-radius: 5px;
+    background-color: #f7f9fc;
+}
+
+.field-toolbar-button {
+    height: 34px;
+    margin-right: 8px;
+    padding-left: 12px;
+    padding-right: 12px;
+    border-width: 1px;
+    border-radius: 5px;
+    font-size: 9px;
+    -unity-font-style: bold;
+}
+
+.field-reload-button {
+    min-width: 82px;
+    border-color: #57baf2;
+    background-color: #e4f5ff;
+    color: #158fd4;
+}
+
+.field-points-toggle {
+    min-width: 184px;
+    margin-right: 0;
+}
+
+.field-points-toggle-on {
+    border-color: #6dcdb1;
+    background-color: #dff8ef;
+    color: #08a273;
+}
+
+.field-points-toggle-off {
+    border-color: #c6d0dc;
+    background-color: #eef2f6;
+    color: #68768a;
+}
+
+.field-workspace-content .field-history-panel {
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 6px;
+}
+
+.analytics-recent-icon {
+    overflow: hidden;
+}
+
+.analytics-recent-icon-image {
+    -unity-background-scale-mode: scale-and-crop;
+    background-color: #dce5ef;
+}
+
+.analytics-recent-icon-placeholder {
+    width: 100%;
+    height: 100%;
+    color: #65758d;
+    font-size: 8px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}

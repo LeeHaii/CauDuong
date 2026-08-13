@@ -68,6 +68,23 @@ public sealed partial class IfcOperationsDashboard
         "Đã xử lý"
     };
 
+    private static readonly List<string> FieldInspectionTypeChoices = new()
+    {
+        "Tất cả loại cấu kiện",
+        "Dầm",
+        "Trụ",
+        "Mố",
+        "Móng cọc",
+        "Mặt đường",
+        "Ta luy",
+        "Hộ lan",
+        "Cột đèn",
+        "Biển báo",
+        "Vạch sơn",
+        "Thoát nước",
+        "Khác"
+    };
+
     private VisualElement homePage;
     private VisualElement dataPage;
     private VisualElement fieldPage;
@@ -120,6 +137,9 @@ public sealed partial class IfcOperationsDashboard
     private DropdownField modelProjectInput;
     private DropdownField modelProvinceInput;
     private DropdownField homeProjectDropdown;
+    private DropdownField fieldProjectFilter;
+    private DropdownField fieldTypeFilter;
+    private Button fieldPointsToggleButton;
     private TextField modelWardInput;
     private TextField modelUnitInput;
     private DropdownField inspectionProjectDropdown;
@@ -144,6 +164,7 @@ public sealed partial class IfcOperationsDashboard
     private long displayedInspectionId;
     private FieldInspectionRecord? displayedInspection;
     private bool inspectionDetailDeleteArmed;
+    private bool fieldPointsVisible = true;
 
     private bool IsReportModuleActive => activeModule == DashboardModule.Report;
 
@@ -207,6 +228,9 @@ public sealed partial class IfcOperationsDashboard
         modelProjectInput = root.Q<DropdownField>("model-project-input");
         modelProvinceInput = root.Q<DropdownField>("model-province-input");
         homeProjectDropdown = root.Q<DropdownField>("home-project-dropdown");
+        fieldProjectFilter = root.Q<DropdownField>("field-project-filter");
+        fieldTypeFilter = root.Q<DropdownField>("field-type-filter");
+        fieldPointsToggleButton = root.Q<Button>("field-points-toggle-button");
         modelWardInput = root.Q<TextField>("model-ward-input");
         modelUnitInput = root.Q<TextField>("model-unit-input");
         inspectionProjectDropdown = root.Q<DropdownField>("inspection-project-dropdown");
@@ -263,6 +287,10 @@ public sealed partial class IfcOperationsDashboard
         filterProvinceInput.RegisterValueChangedCallback(_ => BuildRegistryList());
         filterWardInput.RegisterValueChangedCallback(_ => BuildRegistryList());
         filterFileInput.RegisterValueChangedCallback(_ => BuildRegistryList());
+        fieldProjectFilter.RegisterValueChangedCallback(_ => BuildFieldHistory());
+        fieldTypeFilter.RegisterValueChangedCallback(_ => BuildFieldHistory());
+        root.Q<Button>("field-reload-button").clicked += ReloadFieldInspections;
+        fieldPointsToggleButton.clicked += ToggleFieldInspectionPoints;
 
         modelProvinceInput.choices = VietnamProvinceChoices;
         modelProvinceInput.SetValueWithoutNotify("Thành phố Hà Nội");
@@ -271,6 +299,10 @@ public sealed partial class IfcOperationsDashboard
         inspectionStatusDropdown.choices = InspectionStatusChoices;
         inspectionStatusDropdown.index = 0;
         inspectionStatusDropdown.SetEnabled(false);
+        fieldTypeFilter.choices = FieldInspectionTypeChoices;
+        fieldTypeFilter.SetValueWithoutNotify(FieldInspectionTypeChoices[0]);
+        UpdateFieldProjectFilterChoices();
+        UpdateFieldPointsToggle();
         modelUploadOverlay.style.display = DisplayStyle.None;
         inspectionFormOverlay.style.display = DisplayStyle.None;
         inspectionDetailOverlay.style.display = DisplayStyle.None;
@@ -327,6 +359,7 @@ public sealed partial class IfcOperationsDashboard
         {
             LoadInspectionsFromDatabase();
             UpdateInspectionProjectChoices();
+            UpdateFieldProjectFilterChoices();
             BuildFieldHistory();
         }
         else if (module == DashboardModule.Report)
@@ -726,6 +759,7 @@ public sealed partial class IfcOperationsDashboard
         BuildInspectionPopup();
         UpdateModelProjectChoices();
         UpdateInspectionProjectChoices();
+        UpdateFieldProjectFilterChoices();
         if (selectedRecord != null)
         {
             BuildElementInspectionHistory(selectedRecord);
@@ -738,8 +772,8 @@ public sealed partial class IfcOperationsDashboard
         homeModelCount.text = modelRegistry.Count.ToString("N0");
         homeInspectionCount.text = fieldInspections.Count.ToString("N0");
         homeElementCount.text = records.Count.ToString("N0");
-        fieldRecordCountLabel.text = $"{fieldInspections.Count:N0} ghi nhận";
-        inspectionButton.text = $"Hiện Trường ({fieldInspections.Count:N0})";
+        fieldRecordCountLabel.text = $"{fieldInspections.Count:N0} báo cáo • ✓ Đã đồng bộ";
+        inspectionButton.text = $"Điểm Báo Cáo 3D ({fieldInspections.Count:N0})";
     }
 
     private void BuildRegistryList()
@@ -1594,17 +1628,22 @@ public sealed partial class IfcOperationsDashboard
         }
 
         fieldHistoryList.Clear();
-        if (fieldInspections.Count == 0)
+        var filteredInspections = fieldInspections
+            .Where(MatchesFieldInspectionFilters)
+            .ToArray();
+        if (filteredInspections.Length == 0)
         {
-            var empty = new Label("Chưa có ghi nhận hiện trường.");
+            var empty = new Label(fieldInspections.Count == 0
+                ? "Chưa có ghi nhận hiện trường."
+                : "Không có báo cáo phù hợp với bộ lọc.");
             empty.AddToClassList("field-empty");
             fieldHistoryList.Add(empty);
             return;
         }
 
-        for (var index = 0; index < fieldInspections.Count; index++)
+        for (var index = 0; index < filteredInspections.Length; index++)
         {
-            var inspection = fieldInspections[index];
+            var inspection = filteredInspections[index];
             var row = new VisualElement();
             row.AddToClassList("field-table-row");
             row.Add(CreateFieldTableLabel((index + 1).ToString(), "field-table-index"));
@@ -1639,6 +1678,122 @@ public sealed partial class IfcOperationsDashboard
 
             fieldHistoryList.Add(row);
         }
+    }
+
+    private void ReloadFieldInspections()
+    {
+        LoadInspectionsFromDatabase();
+        UpdateInspectionProjectChoices();
+        UpdateFieldProjectFilterChoices();
+        BuildFieldHistory();
+        BuildInspectionPopup();
+        BuildInspectionMarkers();
+        UpdateModuleCounts();
+        SetImportStatus("Đã tải lại dữ liệu báo cáo hiện trường.");
+    }
+
+    private void UpdateFieldProjectFilterChoices()
+    {
+        if (fieldProjectFilter == null)
+        {
+            return;
+        }
+
+        var current = fieldProjectFilter.value;
+        var choices = new List<string> { "Tất cả dự án" };
+        choices.AddRange(fieldInspections
+            .Select(inspection => inspection.ProjectName)
+            .Where(project => !string.IsNullOrWhiteSpace(project))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(project => project, StringComparer.CurrentCultureIgnoreCase));
+        fieldProjectFilter.choices = choices;
+        fieldProjectFilter.SetValueWithoutNotify(
+            choices.Contains(current) ? current : choices[0]);
+    }
+
+    private bool MatchesFieldInspectionFilters(FieldInspectionRecord inspection)
+    {
+        var projectFilter = fieldProjectFilter?.value;
+        if (!string.IsNullOrWhiteSpace(projectFilter) &&
+            !string.Equals(projectFilter, "Tất cả dự án", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(projectFilter, inspection.ProjectName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var typeFilter = fieldTypeFilter?.value;
+        return string.IsNullOrWhiteSpace(typeFilter) ||
+               string.Equals(typeFilter, FieldInspectionTypeChoices[0], StringComparison.OrdinalIgnoreCase) ||
+               MatchesFieldInspectionType(inspection.ElementType, typeFilter);
+    }
+
+    private static bool MatchesFieldInspectionType(string elementType, string filter)
+    {
+        var value = (elementType ?? string.Empty).Trim();
+        bool ContainsAny(params string[] terms) =>
+            terms.Any(term => value.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        var isKnownType =
+            ContainsAny("Dầm", "IfcBeam", "Beam") ||
+            ContainsAny("Trụ", "IfcColumn", "Column", "Pier") ||
+            ContainsAny("Mố", "Abutment") ||
+            ContainsAny("Móng", "Cọc", "IfcPile", "IfcFooting", "Foundation") ||
+            ContainsAny("Mặt đường", "Pavement", "Road", "IfcSlab") ||
+            ContainsAny("Ta luy", "Slope") ||
+            ContainsAny("Hộ lan", "Guardrail") ||
+            ContainsAny("Cột đèn", "Lighting Pole", "Lamp Post") ||
+            ContainsAny("Biển báo", "Traffic Sign") ||
+            ContainsAny("Vạch sơn", "Road Marking") ||
+            ContainsAny("Thoát nước", "Drain", "Culvert");
+
+        return filter switch
+        {
+            "Dầm" => ContainsAny("Dầm", "IfcBeam", "Beam"),
+            "Trụ" => ContainsAny("Trụ", "IfcColumn", "Column", "Pier"),
+            "Mố" => ContainsAny("Mố", "Abutment"),
+            "Móng cọc" => ContainsAny("Móng", "Cọc", "IfcPile", "IfcFooting", "Foundation"),
+            "Mặt đường" => ContainsAny("Mặt đường", "Pavement", "Road", "IfcSlab"),
+            "Ta luy" => ContainsAny("Ta luy", "Slope"),
+            "Hộ lan" => ContainsAny("Hộ lan", "Guardrail"),
+            "Cột đèn" => ContainsAny("Cột đèn", "Lighting Pole", "Lamp Post"),
+            "Biển báo" => ContainsAny("Biển báo", "Traffic Sign"),
+            "Vạch sơn" => ContainsAny("Vạch sơn", "Road Marking"),
+            "Thoát nước" => ContainsAny("Thoát nước", "Drain", "Culvert"),
+            "Khác" => !isKnownType,
+            _ => true
+        };
+    }
+
+    private void ToggleFieldInspectionPoints()
+    {
+        fieldPointsVisible = !fieldPointsVisible;
+        ApplyFieldPointsVisibility();
+        UpdateFieldPointsToggle();
+    }
+
+    private void ApplyFieldPointsVisibility()
+    {
+        foreach (var marker in inspectionMarkers.Values)
+        {
+            if (marker != null)
+            {
+                marker.gameObject.SetActive(fieldPointsVisible);
+            }
+        }
+    }
+
+    private void UpdateFieldPointsToggle()
+    {
+        if (fieldPointsToggleButton == null)
+        {
+            return;
+        }
+
+        fieldPointsToggleButton.text = fieldPointsVisible
+            ? "Point 3D Bản đồ: Đang BẬT"
+            : "Point 3D Bản đồ: Đang TẮT";
+        fieldPointsToggleButton.EnableInClassList("field-points-toggle-on", fieldPointsVisible);
+        fieldPointsToggleButton.EnableInClassList("field-points-toggle-off", !fieldPointsVisible);
     }
 
     private VisualElement CreateFieldInspectionActions(FieldInspectionRecord inspection)
@@ -1873,8 +2028,32 @@ public sealed partial class IfcOperationsDashboard
         foreach (var inspection in fieldInspections)
         {
             var asset = FindAssetForInspection(inspection);
-            IfcInspectionMarker marker;
-            if (asset != null)
+            ResolveDependencies();
+            var useStoredCoordinate = asset == null ||
+                                      InspectionCoordinateMatchesAsset(
+                                          inspection,
+                                          asset);
+            var anchor = useStoredCoordinate
+                ? arcGisMapLoader?.CreateGeographicAnchor(
+                    $"Inspection {inspection.Id} ArcGIS Anchor",
+                    inspection.Latitude,
+                    inspection.Longitude,
+                    inspection.Elevation)
+                : null;
+            IfcInspectionMarker marker = null;
+            if (anchor != null)
+            {
+                geographicMarkerAnchors.Add(anchor.gameObject);
+                marker = IfcInspectionMarker.Create(
+                    anchor,
+                    anchor.position,
+                    inspection.Id,
+                    asset?.Metadata,
+                    viewingCamera,
+                    inspection.ElementName,
+                    inspection.IsResolved);
+            }
+            else if (asset != null)
             {
                 var assetBounds = RefreshLiveBounds(asset);
                 var markerPosition = assetBounds.center +
@@ -1887,36 +2066,24 @@ public sealed partial class IfcOperationsDashboard
                     viewingCamera,
                     inspection.ElementName,
                     inspection.IsResolved);
+            }
+
+            if (marker == null)
+            {
+                continue;
+            }
+
+            if (asset != null)
+            {
                 marker.SetElementStatus(
                     asset.State.Status,
                     asset.State.HasUserUpdate);
             }
-            else
-            {
-                ResolveDependencies();
-                var anchor = arcGisMapLoader?.CreateGeographicAnchor(
-                    $"Inspection {inspection.Id} ArcGIS Anchor",
-                    inspection.Latitude,
-                    inspection.Longitude,
-                    inspection.Elevation);
-                if (anchor == null)
-                {
-                    continue;
-                }
-
-                geographicMarkerAnchors.Add(anchor.gameObject);
-                marker = IfcInspectionMarker.Create(
-                    anchor,
-                    anchor.position + Vector3.up * 3f,
-                    inspection.Id,
-                    null,
-                    viewingCamera,
-                    inspection.ElementName,
-                    inspection.IsResolved);
-            }
 
             inspectionMarkers[inspection.Id] = marker;
         }
+
+        ApplyFieldPointsVisibility();
 
         if (inspectionMarkerLinkRoutine != null)
         {
@@ -1924,6 +2091,54 @@ public sealed partial class IfcOperationsDashboard
         }
 
         inspectionMarkerLinkRoutine = StartCoroutine(LinkUnassignedInspectionMarkers());
+    }
+
+    private bool InspectionCoordinateMatchesAsset(
+        FieldInspectionRecord inspection,
+        IfcAssetRecord asset)
+    {
+        if (asset?.Metadata == null || arcGisMapLoader == null)
+        {
+            return false;
+        }
+
+        var mapComponent = FindFirstObjectByType<
+            Esri.ArcGISMapsSDK.Components.ArcGISMapComponent>();
+        if (mapComponent == null)
+        {
+            return false;
+        }
+
+        var coordinatePosition = mapComponent.GeographicToEngine(
+            new Esri.GameEngine.Geometry.ArcGISPoint(
+                inspection.Longitude,
+                inspection.Latitude,
+                inspection.Elevation,
+                Esri.GameEngine.Geometry.ArcGISSpatialReference.WGS84()));
+        var hits = Physics.RaycastAll(
+            coordinatePosition + Vector3.up * 3f,
+            Vector3.down,
+            6f,
+            ~0,
+            QueryTriggerInteraction.Ignore);
+        foreach (var hit in hits)
+        {
+            if (hit.collider == null ||
+                hit.collider.GetComponentInParent<IfcInspectionMarker>() != null)
+            {
+                continue;
+            }
+
+            var metadata = hit.collider.GetComponentInParent<IfcElementMetadata>();
+            if (metadata == asset.Metadata)
+            {
+                return true;
+            }
+        }
+
+        var bounds = RefreshLiveBounds(asset);
+        var closestPoint = bounds.ClosestPoint(coordinatePosition);
+        return Vector3.Distance(coordinatePosition, closestPoint) <= 5f;
     }
 
     private IEnumerator LinkUnassignedInspectionMarkers()
@@ -2419,6 +2634,7 @@ public sealed partial class IfcOperationsDashboard
     {
         DestroyInspectionMarkers();
         ReleaseInspectionDetailTexture();
+        ReleaseAnalyticsThumbnailTextures();
         if (inspectionPreviewTexture != null)
         {
             Destroy(inspectionPreviewTexture);
