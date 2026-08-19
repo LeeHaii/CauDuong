@@ -4,13 +4,13 @@ This helper keeps xBIM's .NET 8 and native OpenCASCADE geometry stack outside
 Unity's Mono/IL2CPP process. It converts IFC files into a compact versioned
 stream that `XbimIfcLoader` reads at runtime.
 
-The version 4 stream includes:
+The version 6 stream includes:
 
 - the IFC project length-unit conversion to metres
 - project/site/building/storey/product hierarchy
 - property-set and type-property metadata
 - IFC surface colours, transparency, specular colour, and smoothness
-- positions, normals, generated box-projection UVs, tangents, and sub-meshes
+- positions, optional normals, generated box-projection UVs, tangents, and sub-meshes
 - a compact random-access header for every mesh fragment
 - model-local bounds, product identity, material identity, and spatial-cell keys
 
@@ -42,7 +42,9 @@ The optional converter arguments are:
 
 ```text
 XbimIfcConverter input.ifc output.xbimmesh linearDeflectionMm angularDeflectionDegrees \
-  spatialCellSizeMetres maximumTrianglesPerFragment
+  spatialCellSizeMetres maximumTrianglesPerFragment overviewTargetTriangles \
+  overviewClusterSizeMetres overviewBoundaryClusterSizeMetres overviewRegionSizeMetres \
+  writeNormals writeTextureCoordinates writeTangents
 ```
 
 Unity exposes the same values on `XbimIfcLoader`. Higher values produce fewer
@@ -55,9 +57,13 @@ triangles on curved geometry:
 Linear deflection is converted from millimetres to the IFC model's native unit
 before xBIM creates its geometry context.
 
-The spatial defaults are `100 m` cells and at most `100,000` triangles per
+The spatial defaults are `100 m` cells and at most `20,000` triangles per
 fragment. These are cache-layout controls rather than view settings; changing
 either value produces a new fingerprinted cache on the next runtime import.
+
+Normals default to disabled in Unity because the current IFC material is
+unlit. Enable `importNormals` when switching to a lit shader; the setting is
+part of the cache fingerprint and safely regenerates older converted models.
 
 ## Material colour resolution
 

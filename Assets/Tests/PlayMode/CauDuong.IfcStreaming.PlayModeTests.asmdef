@@ -1,14 +1,10 @@
 {
-  "name": "CauDuong.Osm.Tests",
+  "name": "CauDuong.IfcStreaming.PlayModeTests",
   "rootNamespace": "",
   "references": [
-    "CauDuong.Osm",
-    "CauDuong.IfcOperations",
     "CauDuong.IfcStreaming"
   ],
-  "includePlatforms": [
-    "Editor"
-  ],
+  "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
   "overrideReferences": false,

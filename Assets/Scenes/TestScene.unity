@@ -1233,26 +1233,31 @@ MonoBehaviour:
   useQuadricSimplification: 1
   allowBlockingRuntimeSimplification: 0
   preserveBoundaryEdges: 1
+  importNormals: 0
   importTextureCoordinates: 0
   importTangents: 0
   releaseCpuMeshData: 1
+  useSelectionBvh: 1
   meshesPerFrame: 16
   sourceTrianglesPerFrame: 40000
   converterTimeoutSeconds: 900
   streamingCellSizeMetres: 100
-  maximumTrianglesPerFragment: 50000
+  maximumTrianglesPerFragment: 20000
   overviewTargetTriangles: 200000
   overviewClusterSizeMetres: 1
   overviewBoundaryClusterSizeMetres: 0.25
   overviewRegionSizeMetres: 1000
   streamingLoadDistanceMetres: 750
-  streamingUnloadDistanceMetres: 1000
+  detailPreloadDistanceMetres: 1150
+  streamingUnloadDistanceMetres: 1250
+  forwardPreloadHalfAngleDegrees: 55
+  cameraPredictionSeconds: 0.75
   invisibleCellRetentionSeconds: 4
   streamingEvaluationInterval: 0.25
   maximumResidentTriangles: 4000000
   maximumResidentMeshMemoryMegabytes: 768
   maximumResidentRenderers: 3000
-  maximumMeshLoadsPerFrame: 2
+  meshBuildBudgetMilliseconds: 2.5
   enableStreamingDiagnostics: 1
   streamingDiagnosticsIntervalSeconds: 5
 --- !u!4 &1029702757

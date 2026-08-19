@@ -10,17 +10,17 @@ using Xbim.Ifc4.Interfaces;
 using Xbim.ModelGeometry.Scene;
 
 const uint Magic = 0x4D494258; // "XBIM" in little-endian files.
-const int FormatVersion = 5;
+const int FormatVersion = 6;
 const double DefaultLinearDeflectionMillimetres = 5d;
 const double DefaultAngularDeflectionDegrees = 30d;
 const double DefaultSpatialCellSizeMetres = 100d;
-const int DefaultMaximumTrianglesPerFragment = 50_000;
+const int DefaultMaximumTrianglesPerFragment = 20_000;
 const int DefaultOverviewTargetTriangles = 200_000;
 const double DefaultOverviewClusterSizeMetres = 1d;
 const double DefaultOverviewBoundaryClusterSizeMetres = 0.25d;
 const double DefaultOverviewRegionSizeMetres = 1_000d;
 
-if (args.Length is not 2 and not 4 and not 6 and not 10 and not 12)
+if (args.Length is not 2 and not 4 and not 6 and not 10 and not 12 and not 13)
 {
     Console.Error.WriteLine(
         "Usage: XbimIfcConverter <input.ifc> <output.xbimmesh> " +
@@ -28,7 +28,7 @@ if (args.Length is not 2 and not 4 and not 6 and not 10 and not 12)
         "spatialCellSizeMetres maximumTrianglesPerFragment " +
         "overviewTargetTriangles overviewClusterSizeMetres " +
         "overviewBoundaryClusterSizeMetres overviewRegionSizeMetres " +
-        "writeTextureCoordinates writeTangents]");
+        "writeNormals writeTextureCoordinates writeTangents]");
     return 2;
 }
 
@@ -42,6 +42,7 @@ var overviewTargetTriangles = DefaultOverviewTargetTriangles;
 var overviewClusterSizeMetres = DefaultOverviewClusterSizeMetres;
 var overviewBoundaryClusterSizeMetres = DefaultOverviewBoundaryClusterSizeMetres;
 var overviewRegionSizeMetres = DefaultOverviewRegionSizeMetres;
+var writeNormals = true;
 var writeTextureCoordinates = false;
 var writeTangents = false;
 
@@ -107,6 +108,15 @@ if (args.Length >= 10 &&
 if (args.Length == 12 &&
     (!bool.TryParse(args[10], out writeTextureCoordinates) ||
      !bool.TryParse(args[11], out writeTangents)))
+{
+    Console.Error.WriteLine("Vertex-channel flags must be valid Boolean values.");
+    return 4;
+}
+
+if (args.Length == 13 &&
+    (!bool.TryParse(args[10], out writeNormals) ||
+     !bool.TryParse(args[11], out writeTextureCoordinates) ||
+     !bool.TryParse(args[12], out writeTangents)))
 {
     Console.Error.WriteLine("Vertex-channel flags must be valid Boolean values.");
     return 4;
@@ -298,15 +308,22 @@ try
         }
 
         ValidateIndices(indices, transformedVertices.Length);
-        var normals = CalculateNormals(transformedVertices, indices);
+        var calculatedNormals = writeNormals ||
+                                writeTextureCoordinates ||
+                                writeTangents
+            ? CalculateNormals(transformedVertices, indices)
+            : Array.Empty<Vector3d>();
+        var normals = writeNormals
+            ? calculatedNormals
+            : Array.Empty<Vector3d>();
         var uvs = writeTextureCoordinates
             ? CalculateBoxProjectedUvs(
                 transformedVertices,
-                normals,
+                calculatedNormals,
                 metresPerUnit)
             : Array.Empty<Uv>();
         var tangents = writeTangents
-            ? CalculateTangents(normals)
+            ? CalculateTangents(calculatedNormals)
             : Array.Empty<Tangent>();
 
         var product = model.Instances[shapeInstance.IfcProductLabel] as IIfcProduct;
@@ -356,7 +373,8 @@ try
         WriteOverviewFragment(
             writer,
             overviewFragments[overviewIndex],
-            $"IFC_Surface_Overview_{overviewIndex + 1}");
+            $"IFC_Surface_Overview_{overviewIndex + 1}",
+            writeNormals);
     }
 
     writer.Flush();
@@ -623,7 +641,8 @@ static bool TryReadTransformedShape(
 static void WriteOverviewFragment(
     BinaryWriter writer,
     OverviewFragment fragment,
-    string objectName)
+    string objectName,
+    bool writeNormals)
 {
     var recordStart = writer.BaseStream.Position;
     writer.Write(0L);
@@ -652,12 +671,15 @@ static void WriteOverviewFragment(
         writer.Write((float)vertex.Z);
     }
 
-    writer.Write(fragment.Normals.Length);
-    foreach (var normal in fragment.Normals)
+    writer.Write(writeNormals ? fragment.Normals.Length : 0);
+    if (writeNormals)
     {
-        writer.Write((float)normal.X);
-        writer.Write((float)normal.Y);
-        writer.Write((float)normal.Z);
+        foreach (var normal in fragment.Normals)
+        {
+            writer.Write((float)normal.X);
+            writer.Write((float)normal.Y);
+            writer.Write((float)normal.Z);
+        }
     }
 
     writer.Write(0); // Surface overview materials currently do not use UVs.

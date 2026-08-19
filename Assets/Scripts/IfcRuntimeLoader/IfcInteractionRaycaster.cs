@@ -1,10 +1,25 @@
 using System;
+using System.Collections.Generic;
+using Unity.Profiling;
 using UnityEngine;
 
 public static class IfcInteractionRaycaster
 {
     private const float PointerTolerancePixels = 8f;
     private const float RayTriangleEpsilon = 0.000001f;
+    private const int MaximumPhysicsHits = 512;
+    private const int IfcSelectionLayer = 8;
+    private const int IfcSelectionLayerMask = 1 << IfcSelectionLayer;
+    private static readonly RaycastHit[] HitBuffer = new RaycastHit[MaximumPhysicsHits];
+    private static readonly ProfilerMarker RaycastMarker =
+        new("IFC.Selection.Raycast");
+    private static readonly IComparer<RaycastHit> HitDistanceComparer =
+        Comparer<RaycastHit>.Create(
+            (left, right) => left.distance.CompareTo(right.distance));
+    private static int saturatedHitBufferCount;
+    private static int lastSaturationWarningFrame = -1;
+
+    public static int SaturatedHitBufferCount => saturatedHitBufferCount;
 
     public static bool TryRaycast(
         Camera viewingCamera,
@@ -12,6 +27,7 @@ public static class IfcInteractionRaycaster
         out RaycastHit selectedHit,
         out IfcElementMetadata metadata)
     {
+        using var marker = RaycastMarker.Auto();
         selectedHit = default;
         metadata = null;
         if (viewingCamera == null)
@@ -29,24 +45,29 @@ public static class IfcInteractionRaycaster
             return false;
         }
 
-        Physics.SyncTransforms();
+        if (IfcStreamedModel.ConsumeSelectionPhysicsTransformsDirty())
+        {
+            Physics.SyncTransforms();
+        }
         var previousBackfaceSetting = Physics.queriesHitBackfaces;
         var ray = viewingCamera.ScreenPointToRay(screenPosition);
-        RaycastHit[] hits;
         try
         {
             // IFC surfaces are rendered double-sided, so their colliders must be
             // queryable from either winding direction as well.
             Physics.queriesHitBackfaces = true;
-            hits = Physics.RaycastAll(
+            var hitCount = Physics.RaycastNonAlloc(
                 ray,
+                HitBuffer,
                 viewingCamera.farClipPlane,
-                Physics.DefaultRaycastLayers,
+                IfcSelectionLayerMask,
                 QueryTriggerInteraction.Ignore);
+            ReportSaturatedHitBuffer(hitCount);
 
             var foundPhysicsHit = TrySelectNearestIfc(
                 ray,
-                hits,
+                HitBuffer,
+                hitCount,
                 out selectedHit,
                 out metadata);
             var foundOverviewHit = IfcStreamedModel.TryRaycastSurfaceOverview(
@@ -68,14 +89,21 @@ public static class IfcInteractionRaycaster
                 return true;
             }
 
-            var radius = GetPointerToleranceRadius(viewingCamera, hits);
-            hits = Physics.SphereCastAll(
+            var radius = GetPointerToleranceRadius(viewingCamera, HitBuffer, hitCount);
+            hitCount = Physics.SphereCastNonAlloc(
                 ray,
                 radius,
+                HitBuffer,
                 viewingCamera.farClipPlane,
-                Physics.DefaultRaycastLayers,
+                IfcSelectionLayerMask,
                 QueryTriggerInteraction.Ignore);
-            return TrySelectNearestIfc(ray, hits, out selectedHit, out metadata);
+            ReportSaturatedHitBuffer(hitCount);
+            return TrySelectNearestIfc(
+                ray,
+                HitBuffer,
+                hitCount,
+                out selectedHit,
+                out metadata);
         }
         finally
         {
@@ -86,17 +114,31 @@ public static class IfcInteractionRaycaster
     private static bool TrySelectNearestIfc(
         Ray ray,
         RaycastHit[] hits,
+        int hitCount,
         out RaycastHit selectedHit,
         out IfcElementMetadata metadata)
     {
         selectedHit = default;
         metadata = null;
-        Array.Sort(hits, (left, right) => left.distance.CompareTo(right.distance));
+        Array.Sort(
+            hits,
+            0,
+            hitCount,
+            HitDistanceComparer);
 
         var nearestDistance = float.PositiveInfinity;
-        foreach (var hit in hits)
+        for (var hitIndex = 0; hitIndex < hitCount; hitIndex++)
         {
-            var candidate = hit.transform.GetComponentInParent<IfcElementMetadata>();
+            var hit = hits[hitIndex];
+            var hasDirectRegistration =
+                IfcStreamedModel.TryGetDetailPickMetadata(
+                    hit.collider,
+                    out var candidate);
+            if (!hasDirectRegistration)
+            {
+                candidate = hit.transform.GetComponentInParent<IfcElementMetadata>();
+            }
+
             if (candidate == null)
             {
                 continue;
@@ -117,15 +159,21 @@ public static class IfcInteractionRaycaster
 
             // Large IFC meshes retain a cheap BoxCollider for broad-phase lookup.
             // A bounds hit is not a surface hit: roads, arches, and terrain can
-            // leave most of that box empty. Confirm it against the readable render
-            // mesh before allowing the element to be selected.
+            // leave most of that box empty. Confirm it against the streamed
+            // selection BVH, with readable meshes retained as a rollout fallback.
             if (hit.collider is not BoxCollider ||
-                !TryRaycastReadableMesh(
-                    ray,
-                    hit.collider,
-                    out var surfacePoint,
-                    out var surfaceNormal,
-                    out var surfaceDistance) ||
+                (!IfcStreamedModel.TryRaycastDetailSurface(
+                     ray,
+                     hit.collider,
+                     out var surfacePoint,
+                     out var surfaceNormal,
+                     out var surfaceDistance) &&
+                 !TryRaycastReadableMesh(
+                     ray,
+                     hit.collider,
+                     out surfacePoint,
+                     out surfaceNormal,
+                     out surfaceDistance)) ||
                 surfaceDistance >= nearestDistance)
             {
                 continue;
@@ -140,6 +188,25 @@ public static class IfcInteractionRaycaster
         }
 
         return metadata != null;
+    }
+
+    private static void ReportSaturatedHitBuffer(int hitCount)
+    {
+        if (hitCount < MaximumPhysicsHits)
+        {
+            return;
+        }
+
+        saturatedHitBufferCount++;
+        if (lastSaturationWarningFrame == Time.frameCount)
+        {
+            return;
+        }
+
+        lastSaturationWarningFrame = Time.frameCount;
+        Debug.LogWarning(
+            $"IFC selection physics hit buffer reached {MaximumPhysicsHits:N0} hits; " +
+            "the nearest result may be incomplete.");
     }
 
     private static bool TryRaycastReadableMesh(
@@ -249,11 +316,13 @@ public static class IfcInteractionRaycaster
 
     private static float GetPointerToleranceRadius(
         Camera viewingCamera,
-        RaycastHit[] referenceHits)
+        RaycastHit[] referenceHits,
+        int hitCount)
     {
         var referenceDistance = Mathf.Min(500f, viewingCamera.farClipPlane * 0.1f);
-        foreach (var hit in referenceHits)
+        for (var hitIndex = 0; hitIndex < hitCount; hitIndex++)
         {
+            var hit = referenceHits[hitIndex];
             if (hit.distance > 0f)
             {
                 referenceDistance = Mathf.Min(referenceDistance, hit.distance);

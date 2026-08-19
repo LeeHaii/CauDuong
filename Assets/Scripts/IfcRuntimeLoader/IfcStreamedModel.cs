@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using CauDuong.IfcStreaming;
 using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -32,9 +33,12 @@ internal sealed class IfcStreamMeshRecord
     public GameObject RuntimeObject;
     public Mesh Mesh;
     public MeshRenderer Renderer;
+    public BoxCollider BoundsCollider;
+    public IfcElementMetadata Metadata;
     public Vector3[] SelectionVertices;
     public int[][] SelectionSubMeshes;
     public int[] TriangleProductLabels;
+    public IfcTriangleBvh SelectionBvh;
 }
 
 public readonly struct IfcStreamedElementSummary
@@ -80,57 +84,99 @@ internal readonly struct IfcOverviewRaycastHit
     }
 }
 
+internal readonly struct IfcDetailPickRegistration
+{
+    public IfcStreamedModel Model { get; }
+    public IfcStreamMeshRecord Record { get; }
+    public IfcElementMetadata Metadata { get; }
+
+    public IfcDetailPickRegistration(
+        IfcStreamedModel model,
+        IfcStreamMeshRecord record,
+        IfcElementMetadata metadata)
+    {
+        Model = model;
+        Record = record;
+        Metadata = metadata;
+    }
+}
+
 internal readonly struct IfcStreamingSettings
 {
     public float CellSizeMetres { get; }
     public float LoadDistanceMetres { get; }
+    public float DetailPreloadDistanceMetres { get; }
     public float UnloadDistanceMetres { get; }
+    public float ForwardPreloadHalfAngleDegrees { get; }
+    public float CameraPredictionSeconds { get; }
     public float InvisibleRetentionSeconds { get; }
     public float EvaluationIntervalSeconds { get; }
     public long MaximumResidentTriangles { get; }
     public long MaximumResidentBytes { get; }
     public int MaximumResidentRenderers { get; }
-    public int MeshLoadsPerFrame { get; }
+    public float MeshBuildBudgetMilliseconds { get; }
     public bool GenerateMeshColliders { get; }
     public int MaximumMeshColliderTriangles { get; }
+    public bool ImportNormals { get; }
     public bool ImportTextureCoordinates { get; }
     public bool ImportTangents { get; }
     public bool ReleaseCpuMeshData { get; }
+    public bool UseSelectionBvh { get; }
     public bool EnableDiagnostics { get; }
     public float DiagnosticsIntervalSeconds { get; }
 
     public IfcStreamingSettings(
         float cellSizeMetres,
         float loadDistanceMetres,
+        float detailPreloadDistanceMetres,
         float unloadDistanceMetres,
+        float forwardPreloadHalfAngleDegrees,
+        float cameraPredictionSeconds,
         float invisibleRetentionSeconds,
         float evaluationIntervalSeconds,
         long maximumResidentTriangles,
         long maximumResidentBytes,
         int maximumResidentRenderers,
-        int meshLoadsPerFrame,
+        float meshBuildBudgetMilliseconds,
         bool generateMeshColliders,
         int maximumMeshColliderTriangles,
+        bool importNormals,
         bool importTextureCoordinates,
         bool importTangents,
         bool releaseCpuMeshData,
+        bool useSelectionBvh,
         bool enableDiagnostics,
         float diagnosticsIntervalSeconds)
     {
         CellSizeMetres = Mathf.Max(1f, cellSizeMetres);
         LoadDistanceMetres = Mathf.Max(CellSizeMetres, loadDistanceMetres);
-        UnloadDistanceMetres = Mathf.Max(LoadDistanceMetres, unloadDistanceMetres);
+        DetailPreloadDistanceMetres = Mathf.Max(
+            LoadDistanceMetres,
+            detailPreloadDistanceMetres);
+        UnloadDistanceMetres = Mathf.Max(
+            DetailPreloadDistanceMetres,
+            unloadDistanceMetres);
+        ForwardPreloadHalfAngleDegrees = Mathf.Clamp(
+            forwardPreloadHalfAngleDegrees,
+            1f,
+            89f);
+        CameraPredictionSeconds = Mathf.Max(0f, cameraPredictionSeconds);
         InvisibleRetentionSeconds = Mathf.Max(0f, invisibleRetentionSeconds);
         EvaluationIntervalSeconds = Mathf.Max(0.05f, evaluationIntervalSeconds);
         MaximumResidentTriangles = Math.Max(1_000L, maximumResidentTriangles);
         MaximumResidentBytes = Math.Max(16L * 1024L * 1024L, maximumResidentBytes);
         MaximumResidentRenderers = Mathf.Max(1, maximumResidentRenderers);
-        MeshLoadsPerFrame = Mathf.Max(1, meshLoadsPerFrame);
+        MeshBuildBudgetMilliseconds = Mathf.Clamp(
+            meshBuildBudgetMilliseconds,
+            0.25f,
+            16f);
         GenerateMeshColliders = generateMeshColliders;
         MaximumMeshColliderTriangles = Mathf.Max(1_000, maximumMeshColliderTriangles);
+        ImportNormals = importNormals;
         ImportTextureCoordinates = importTextureCoordinates;
         ImportTangents = importTangents;
         ReleaseCpuMeshData = releaseCpuMeshData;
+        UseSelectionBvh = useSelectionBvh;
         EnableDiagnostics = enableDiagnostics;
         DiagnosticsIntervalSeconds = Mathf.Max(1f, diagnosticsIntervalSeconds);
     }
@@ -145,12 +191,26 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private const int MaximumUnloadsPerFrame = 64;
     private const double MaximumUnloadMillisecondsPerFrame = 2.5d;
     private const float ForcedElementSeconds = 8f;
+    private const float MinimumBoundsColliderThicknessMetres = 0.001f;
+    private const int IfcSelectionLayer = 8;
     private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
     private static readonly int ColorId = Shader.PropertyToID("_Color");
     private static readonly ProfilerMarker EvaluateMarker =
         new("IFC.Streaming.Evaluate");
+    private static readonly ProfilerMarker PlanMarker =
+        new("IFC.Streaming.VisibilityPlan");
     private static readonly ProfilerMarker LoadMarker =
         new("IFC.Streaming.LoadFragment");
+    private static readonly ProfilerMarker DecodeMarker =
+        new("IFC.Streaming.CacheReadDecode");
+    private static readonly ProfilerMarker MeshConstructionMarker =
+        new("IFC.Streaming.MeshConstruction");
+    private static readonly ProfilerMarker ColliderSetupMarker =
+        new("IFC.Streaming.ColliderSetup");
+    private static readonly ProfilerMarker SelectionSetupMarker =
+        new("IFC.Streaming.SelectionSetup");
+    private static readonly ProfilerMarker RendererActivationMarker =
+        new("IFC.Streaming.RendererActivation");
 
     private sealed class ElementState
     {
@@ -174,7 +234,10 @@ public sealed class IfcStreamedModel : MonoBehaviour
         public bool HasBounds;
         public bool Queued;
         public float LastDesiredTime = float.NegativeInfinity;
+        public float FirstDesiredTime = float.NegativeInfinity;
         public float ForcedUntil;
+        public float Priority = float.PositiveInfinity;
+        public bool ReadinessRequired;
         public int ResidentRecordCount;
     }
 
@@ -182,11 +245,19 @@ public sealed class IfcStreamedModel : MonoBehaviour
     {
         public CellState Cell { get; }
         public float SquaredDistance { get; }
+        public float Priority { get; }
+        public bool InsideFrustum { get; }
 
-        public CellCandidate(CellState cell, float squaredDistance)
+        public CellCandidate(
+            CellState cell,
+            float squaredDistance,
+            float priority,
+            bool insideFrustum)
         {
             Cell = cell;
             SquaredDistance = squaredDistance;
+            Priority = priority;
+            InsideFrustum = insideFrustum;
         }
     }
 
@@ -201,7 +272,10 @@ public sealed class IfcStreamedModel : MonoBehaviour
         public int[][] SubMeshes;
         public int[] StyleLabels;
         public int[] TriangleProductLabels;
+        public IfcTriangleBvh SelectionBvh;
+        public string SelectionBuildFailure;
         public double DecodeMilliseconds;
+        public double SelectionBuildMilliseconds;
     }
 
     private readonly struct PendingUnload
@@ -217,6 +291,9 @@ public sealed class IfcStreamedModel : MonoBehaviour
     }
 
     private static readonly HashSet<IfcStreamedModel> ActiveModels = new();
+    private static readonly Dictionary<Collider, IfcDetailPickRegistration>
+        DetailPickRegistrations = new();
+    private static bool selectionPhysicsTransformsDirty;
 
     private readonly Dictionary<Vector3Int, CellState> cells = new();
     private readonly Dictionary<int, ElementState> elements = new();
@@ -251,16 +328,37 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private int loadedFragmentCount;
     private int unloadedFragmentCount;
     private int cancelledFragmentLoadCount;
+    private int pickableColliderCount;
     private long overviewResidentTriangles;
     private int overviewResidentRenderers;
     private bool overviewRequested;
+    private bool overviewLoadRequested;
+    private bool detailVisible;
+    private bool detailWanted;
+    private IfcRepresentationState representationState =
+        IfcRepresentationState.OverviewOnly;
+    private Vector3 previousCameraPosition;
+    private Vector3 previousCameraForward;
+    private float previousCameraSampleTime = float.NegativeInfinity;
+    private float detailPreloadStartedTime = float.NegativeInfinity;
+    private float lastDetailFirstVisibleMilliseconds = -1f;
+    private float detailResident50Milliseconds = -1f;
+    private float detailResident90Milliseconds = -1f;
+    private float detailResident100Milliseconds = -1f;
+    private int budgetBlockedCount;
+    private double totalQueueWaitMilliseconds;
     private double totalDecodeMilliseconds;
     private double maximumDecodeMilliseconds;
     private double totalMeshBuildMilliseconds;
     private double maximumMeshBuildMilliseconds;
+    private double totalSelectionBuildMilliseconds;
+    private double maximumSelectionBuildMilliseconds;
+    private long residentSelectionBvhBytes;
     private Bounds modelLocalBounds;
     private bool hasModelBounds;
     private bool registeredWithGlobalBudget;
+    private Matrix4x4 lastSelectionLocalToWorld;
+    private bool hasSelectionTransformSample;
 
     public bool IsInitialized { get; private set; }
     public string CachePath => cachePath ?? string.Empty;
@@ -270,6 +368,8 @@ public sealed class IfcStreamedModel : MonoBehaviour
     public long ResidentTriangleCount => residentTriangles;
     public long EstimatedResidentBytes => residentBytes;
     public int ResidentRendererCount => residentRenderers;
+    public int PickableColliderCount => pickableColliderCount;
+    public long ResidentSelectionBvhBytes => residentSelectionBvhBytes;
     public long OverviewTriangleCount { get; private set; }
     public long OverviewResidentTriangleCount => overviewResidentTriangles;
 
@@ -283,11 +383,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private void OnEnable()
     {
         ActiveModels.Add(this);
+        UpdateAllRecordPickability();
     }
 
     private void OnDisable()
     {
         ActiveModels.Remove(this);
+        UpdateAllRecordPickability();
     }
 
     internal void Initialize(
@@ -309,6 +411,14 @@ public sealed class IfcStreamedModel : MonoBehaviour
         parentsByProduct = productParents;
         materialsByStyle = styleMaterials;
         settings = streamingSettings;
+        lastSelectionLocalToWorld = transform.localToWorldMatrix;
+        hasSelectionTransformSample = true;
+        selectionPhysicsTransformsDirty = true;
+        representationState = IfcRepresentationState.OverviewOnly;
+        overviewLoadRequested = true;
+        overviewRequested = true;
+        detailVisible = false;
+        detailWanted = false;
 
         foreach (var record in records)
         {
@@ -408,8 +518,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
         {
             if (renderer != null)
             {
-                renderer.enabled = visible;
+                renderer.enabled = visible && detailVisible;
             }
+        }
+
+        foreach (var record in element.Records)
+        {
+            UpdateRecordPickability(record, visible);
         }
 
         if (visible)
@@ -582,6 +697,113 @@ public sealed class IfcStreamedModel : MonoBehaviour
         return found;
     }
 
+    internal static bool TryRaycastDetailSurface(
+        Ray worldRay,
+        Collider boundsCollider,
+        out Vector3 worldPoint,
+        out Vector3 worldNormal,
+        out float worldDistance)
+    {
+        worldPoint = default;
+        worldNormal = default;
+        worldDistance = float.PositiveInfinity;
+        if (boundsCollider == null ||
+            !DetailPickRegistrations.TryGetValue(
+                boundsCollider,
+                out var registration) ||
+            registration.Model == null ||
+            registration.Record == null ||
+            !registration.Record.Resident ||
+            !boundsCollider.enabled ||
+            !boundsCollider.gameObject.activeInHierarchy ||
+            registration.Record.SelectionBvh == null)
+        {
+            return false;
+        }
+
+        var record = registration.Record;
+        if (record.BoundsCollider != boundsCollider ||
+            record.SelectionBvh == null)
+        {
+            return false;
+        }
+
+        var owner = boundsCollider.transform;
+        var localOrigin = owner.InverseTransformPoint(worldRay.origin);
+        var localRayPoint = owner.InverseTransformPoint(
+            worldRay.origin + worldRay.direction);
+        var localDirection = localRayPoint - localOrigin;
+        if (!record.SelectionBvh.Raycast(
+                new Ray(localOrigin, localDirection),
+                out var localDistance,
+                out var localNormal))
+        {
+            return false;
+        }
+
+        var normalizedLocalDirection = localDirection.normalized;
+        worldPoint = owner.TransformPoint(
+            localOrigin + normalizedLocalDirection * localDistance);
+        worldNormal = owner.TransformDirection(localNormal).normalized;
+        if (Vector3.Dot(worldNormal, worldRay.direction) > 0f)
+        {
+            worldNormal = -worldNormal;
+        }
+
+        worldDistance = Vector3.Distance(worldRay.origin, worldPoint);
+        return true;
+    }
+
+    internal static bool TryGetDetailPickMetadata(
+        Collider collider,
+        out IfcElementMetadata metadata)
+    {
+        metadata = null;
+        if (collider == null ||
+            !DetailPickRegistrations.TryGetValue(collider, out var registration) ||
+            registration.Model == null ||
+            registration.Record == null ||
+            !registration.Record.Resident ||
+            !collider.enabled ||
+            !collider.gameObject.activeInHierarchy ||
+            registration.Metadata == null)
+        {
+            return false;
+        }
+
+        metadata = registration.Metadata;
+        return true;
+    }
+
+    internal static bool ConsumeSelectionPhysicsTransformsDirty()
+    {
+        var needsSync = selectionPhysicsTransformsDirty;
+        foreach (var model in ActiveModels)
+        {
+            if (model == null)
+            {
+                continue;
+            }
+
+            var currentTransform = model.transform.localToWorldMatrix;
+            if (!model.hasSelectionTransformSample ||
+                currentTransform != model.lastSelectionLocalToWorld)
+            {
+                needsSync = true;
+                model.lastSelectionLocalToWorld = currentTransform;
+                model.hasSelectionTransformSample = true;
+            }
+        }
+
+        selectionPhysicsTransformsDirty = false;
+        return needsSync;
+    }
+
+    internal static void MarkSelectionPhysicsTransformsDirty()
+    {
+        selectionPhysicsTransformsDirty = true;
+    }
+
     private static bool TryIntersectTriangle(
         Vector3 rayOrigin,
         Vector3 rayDirection,
@@ -659,13 +881,23 @@ public sealed class IfcStreamedModel : MonoBehaviour
             return;
         }
 
+        using var planMarker = PlanMarker.Auto();
+        var now = Time.unscaledTime;
+        var cameraPosition = viewingCamera.transform.position;
+        var cameraForward = viewingCamera.transform.forward;
         GeometryUtility.CalculateFrustumPlanes(viewingCamera, frustumPlanes);
         desiredCells.Clear();
         candidateScratch.Clear();
         unloadScratch.Clear();
+        foreach (var cell in residentCells)
+        {
+            cell.Priority = float.PositiveInfinity;
+            cell.ReadinessRequired = false;
+        }
+
         foreach (var cell in forcedCells)
         {
-            if (Time.unscaledTime > cell.ForcedUntil)
+            if (now > cell.ForcedUntil)
             {
                 unloadScratch.Add(cell);
             }
@@ -676,74 +908,190 @@ public sealed class IfcStreamedModel : MonoBehaviour
             forcedCells.Remove(cell);
         }
 
-        var modelOutsideDetailRange =
-            hasModelBounds &&
-            TransformBounds(transform, modelLocalBounds).SqrDistance(
-                viewingCamera.transform.position) >
-            settings.UnloadDistanceMetres * settings.UnloadDistanceMetres;
-        SetOverviewRequested(modelOutsideDetailRange);
-        if (modelOutsideDetailRange && forcedCells.Count == 0)
+        var sampleDelta = previousCameraSampleTime > float.NegativeInfinity
+            ? Mathf.Max(0.001f, now - previousCameraSampleTime)
+            : 0f;
+        var predictedCameraPosition = cameraPosition;
+        var predictedCameraForward = cameraForward;
+        if (sampleDelta > 0f)
         {
-            unloadScratch.Clear();
-            unloadScratch.AddRange(residentCells);
-            foreach (var cell in unloadScratch)
-            {
-                UnloadCell(cell);
-            }
-
-            return;
+            var predictionScale = settings.CameraPredictionSeconds / sampleDelta;
+            predictedCameraPosition +=
+                (cameraPosition - previousCameraPosition) * predictionScale;
+            predictedCameraForward = (
+                cameraForward +
+                (cameraForward - previousCameraForward) * predictionScale).normalized;
         }
 
-        var localCamera = transform.InverseTransformPoint(viewingCamera.transform.position);
+        previousCameraPosition = cameraPosition;
+        previousCameraForward = cameraForward;
+        previousCameraSampleTime = now;
+
+        var modelSquaredDistance = hasModelBounds
+            ? TransformBounds(transform, modelLocalBounds).SqrDistance(cameraPosition)
+            : float.PositiveInfinity;
+        detailWanted = forcedCells.Count > 0 ||
+                       modelSquaredDistance <=
+                       settings.DetailPreloadDistanceMetres *
+                       settings.DetailPreloadDistanceMetres;
+        if (detailWanted && detailPreloadStartedTime < 0f)
+        {
+            detailPreloadStartedTime = now;
+            detailResident50Milliseconds = -1f;
+            detailResident90Milliseconds = -1f;
+            detailResident100Milliseconds = -1f;
+        }
+        else if (!detailWanted)
+        {
+            detailPreloadStartedTime = float.NegativeInfinity;
+        }
+
+        var localCamera = transform.InverseTransformPoint(cameraPosition);
         var cameraMetres = localCamera * (float)metresPerUnit;
         var centerCell = new Vector3Int(
             Mathf.FloorToInt(cameraMetres.x / settings.CellSizeMetres),
             Mathf.FloorToInt(cameraMetres.y / settings.CellSizeMetres),
             Mathf.FloorToInt(cameraMetres.z / settings.CellSizeMetres));
         var radius = Mathf.CeilToInt(
-            settings.LoadDistanceMetres / settings.CellSizeMetres) + 1;
+            settings.DetailPreloadDistanceMetres / settings.CellSizeMetres) + 1;
         var maximumSquaredDistance =
+            settings.DetailPreloadDistanceMetres *
+            settings.DetailPreloadDistanceMetres;
+        var fullDetailSquaredDistance =
             settings.LoadDistanceMetres * settings.LoadDistanceMetres;
+        var coneCosine = Mathf.Cos(
+            settings.ForwardPreloadHalfAngleDegrees * Mathf.Deg2Rad);
+        var nearestVisibleSquaredDistance = float.PositiveInfinity;
+        var nearestCandidateSquaredDistance = float.PositiveInfinity;
 
-        for (var x = centerCell.x - radius; x <= centerCell.x + radius; x++)
+        if (detailWanted)
         {
-            for (var y = centerCell.y - radius; y <= centerCell.y + radius; y++)
+            for (var x = centerCell.x - radius; x <= centerCell.x + radius; x++)
             {
-                for (var z = centerCell.z - radius; z <= centerCell.z + radius; z++)
+                for (var y = centerCell.y - radius; y <= centerCell.y + radius; y++)
                 {
-                    if (!cells.TryGetValue(new Vector3Int(x, y, z), out var cell))
+                    for (var z = centerCell.z - radius; z <= centerCell.z + radius; z++)
                     {
-                        continue;
-                    }
+                        if (!cells.TryGetValue(new Vector3Int(x, y, z), out var cell))
+                        {
+                            continue;
+                        }
 
-                    var worldBounds = TransformBounds(transform, cell.LocalBounds);
-                    var squaredDistance = worldBounds.SqrDistance(
-                        viewingCamera.transform.position);
-                    if (squaredDistance > maximumSquaredDistance ||
-                        !GeometryUtility.TestPlanesAABB(frustumPlanes, worldBounds))
-                    {
-                        continue;
-                    }
+                        var worldBounds = TransformBounds(transform, cell.LocalBounds);
+                        var squaredDistance = worldBounds.SqrDistance(cameraPosition);
+                        var predictedSquaredDistance = worldBounds.SqrDistance(
+                            predictedCameraPosition);
+                        if (Mathf.Min(squaredDistance, predictedSquaredDistance) >
+                            maximumSquaredDistance)
+                        {
+                            continue;
+                        }
 
-                    desiredCells.Add(cell);
-                    candidateScratch.Add(new CellCandidate(cell, squaredDistance));
+                        var insideFrustum = GeometryUtility.TestPlanesAABB(
+                            frustumPlanes,
+                            worldBounds);
+                        var insideForwardCone = IfcVisibilityPlanner.IsInsideForwardCone(
+                            predictedCameraPosition,
+                            predictedCameraForward,
+                            worldBounds.center,
+                            coneCosine);
+                        if (!insideFrustum && !insideForwardCone)
+                        {
+                            continue;
+                        }
+
+                        var priority = IfcVisibilityPlanner.CalculateCellPriority(
+                            squaredDistance,
+                            false,
+                            insideFrustum,
+                            insideForwardCone,
+                            predictedSquaredDistance);
+                        cell.Priority = priority;
+                        desiredCells.Add(cell);
+                        candidateScratch.Add(new CellCandidate(
+                            cell,
+                            squaredDistance,
+                            priority,
+                            insideFrustum));
+                        nearestCandidateSquaredDistance = Mathf.Min(
+                            nearestCandidateSquaredDistance,
+                            Mathf.Min(squaredDistance, predictedSquaredDistance));
+                        if (insideFrustum)
+                        {
+                            nearestVisibleSquaredDistance = Mathf.Min(
+                                nearestVisibleSquaredDistance,
+                                squaredDistance);
+                        }
+                    }
                 }
             }
         }
 
+        if (nearestVisibleSquaredDistance < float.PositiveInfinity)
+        {
+            var readinessRadius = Mathf.Sqrt(nearestVisibleSquaredDistance) +
+                                  settings.CellSizeMetres * 1.75f;
+            var readinessSquaredDistance = readinessRadius * readinessRadius;
+            foreach (var candidate in candidateScratch)
+            {
+                candidate.Cell.ReadinessRequired = candidate.InsideFrustum &&
+                                                   candidate.SquaredDistance <=
+                                                   readinessSquaredDistance;
+            }
+        }
+
+        // Outside the full-detail radius, only the closest cell ring is
+        // decoded. This produces a fast recognizable handoff without filling
+        // the residency budget with the entire 1.15 km preload volume.
+        if (nearestCandidateSquaredDistance < float.PositiveInfinity)
+        {
+            var preloadRingRadius = Mathf.Sqrt(nearestCandidateSquaredDistance) +
+                                    settings.CellSizeMetres * 1.75f;
+            var preloadRingSquaredDistance = preloadRingRadius * preloadRingRadius;
+            for (var index = candidateScratch.Count - 1; index >= 0; index--)
+            {
+                var candidate = candidateScratch[index];
+                if (candidate.Cell.ReadinessRequired ||
+                    candidate.SquaredDistance <= fullDetailSquaredDistance ||
+                    candidate.SquaredDistance <= preloadRingSquaredDistance)
+                {
+                    continue;
+                }
+
+                desiredCells.Remove(candidate.Cell);
+                candidate.Cell.Priority = float.PositiveInfinity;
+                candidateScratch.RemoveAt(index);
+            }
+        }
+
         candidateScratch.Sort(
-            (left, right) => left.SquaredDistance.CompareTo(right.SquaredDistance));
+            (left, right) => left.Priority.CompareTo(right.Priority));
         ClearPendingQueue();
-        var now = Time.unscaledTime;
         foreach (var cell in forcedCells)
         {
+            cell.Priority = IfcVisibilityPlanner.ForcedPriority;
+            desiredCells.Add(cell);
             QueueCell(cell);
         }
 
         foreach (var candidate in candidateScratch)
         {
             candidate.Cell.LastDesiredTime = now;
+            if (candidate.Cell.FirstDesiredTime < 0f)
+            {
+                candidate.Cell.FirstDesiredTime = now;
+            }
+
             QueueCell(candidate.Cell);
+        }
+
+        UpdateRepresentation();
+
+        // While the overview is being prepared for a zoom-out, detail is the
+        // only visible representation and must remain untouched.
+        if (representationState == IfcRepresentationState.PreloadingOverview)
+        {
+            return;
         }
 
         unloadScratch.Clear();
@@ -757,7 +1105,8 @@ public sealed class IfcStreamedModel : MonoBehaviour
             }
 
             var worldBounds = TransformBounds(transform, cell.LocalBounds);
-            if (worldBounds.SqrDistance(viewingCamera.transform.position) <=
+            if (detailWanted &&
+                worldBounds.SqrDistance(cameraPosition) <=
                 settings.UnloadDistanceMetres * settings.UnloadDistanceMetres &&
                 GeometryUtility.TestPlanesAABB(frustumPlanes, worldBounds))
             {
@@ -770,11 +1119,20 @@ public sealed class IfcStreamedModel : MonoBehaviour
         foreach (var cell in unloadScratch)
         {
             UnloadCell(cell);
+            if (!detailWanted)
+            {
+                cell.FirstDesiredTime = float.NegativeInfinity;
+            }
         }
     }
 
     private void QueueCell(CellState cell)
     {
+        if (cell.FirstDesiredTime < 0f)
+        {
+            cell.FirstDesiredTime = Time.unscaledTime;
+        }
+
         foreach (var record in cell.Records)
         {
             record.UnloadQueued = false;
@@ -834,24 +1192,372 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
     }
 
-    private void SetOverviewRequested(bool requested)
+    private bool IsDetailReady()
     {
-        if (overviewRequested == requested)
+        var hasRequiredCell = false;
+        foreach (var cell in desiredCells)
+        {
+            if (!cell.ReadinessRequired && Time.unscaledTime > cell.ForcedUntil)
+            {
+                continue;
+            }
+
+            hasRequiredCell = true;
+            foreach (var record in cell.Records)
+            {
+                if (!record.Resident &&
+                    !record.Failed &&
+                    elements.TryGetValue(record.ProductLabel, out var element) &&
+                    element.Visible)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return hasRequiredCell;
+    }
+
+    private bool IsOverviewReady()
+    {
+        if (overviewRecords == null || overviewRecords.Count == 0)
+        {
+            return false;
+        }
+
+        var hasResidentRecord = false;
+        foreach (var record in overviewRecords)
+        {
+            hasResidentRecord |= record.Resident;
+            if (!record.Resident && !record.Failed)
+            {
+                return false;
+            }
+        }
+
+        return hasResidentRecord;
+    }
+
+    private void UpdateRepresentation()
+    {
+        var decision = IfcVisibilityPlanner.EvaluateRepresentation(
+            representationState,
+            detailWanted,
+            IsDetailReady(),
+            IsOverviewReady());
+        var wasDetailVisible = detailVisible;
+        representationState = decision.State;
+
+        if (decision.ShowDetail)
+        {
+            SetDetailVisible(true);
+            SetOverviewVisible(false);
+        }
+        else
+        {
+            SetOverviewVisible(decision.ShowOverview);
+            SetDetailVisible(false);
+        }
+
+        SetOverviewLoadRequested(decision.KeepOverviewResident);
+        UpdateResidencyMilestones();
+        if (!wasDetailVisible && detailVisible && detailPreloadStartedTime >= 0f)
+        {
+            lastDetailFirstVisibleMilliseconds =
+                (Time.unscaledTime - detailPreloadStartedTime) * 1_000f;
+        }
+    }
+
+    private void UpdateResidencyMilestones()
+    {
+        if (!detailWanted || detailPreloadStartedTime < 0f)
         {
             return;
         }
 
-        overviewRequested = requested;
-        if (requested)
+        var total = 0;
+        var resident = 0;
+        foreach (var cell in desiredCells)
         {
-            foreach (var record in overviewRecords)
+            foreach (var record in cell.Records)
             {
-                if (record.Renderer != null)
+                if (!elements.TryGetValue(record.ProductLabel, out var element) ||
+                    !element.Visible)
                 {
-                    record.Renderer.enabled = true;
+                    continue;
+                }
+
+                total++;
+                if (record.Resident)
+                {
+                    resident++;
+                }
+            }
+        }
+
+        if (total == 0)
+        {
+            return;
+        }
+
+        var elapsedMilliseconds =
+            (Time.unscaledTime - detailPreloadStartedTime) * 1_000f;
+        var ratio = (float)resident / total;
+        if (ratio >= 0.5f && detailResident50Milliseconds < 0f)
+        {
+            detailResident50Milliseconds = elapsedMilliseconds;
+        }
+
+        if (ratio >= 0.9f && detailResident90Milliseconds < 0f)
+        {
+            detailResident90Milliseconds = elapsedMilliseconds;
+        }
+
+        if (resident == total && detailResident100Milliseconds < 0f)
+        {
+            detailResident100Milliseconds = elapsedMilliseconds;
+        }
+    }
+
+    private bool TryReserveWithEviction(
+        IfcStreamMeshRecord record,
+        float incomingPriority)
+    {
+        if (GlobalBudget.TryReserve(
+                record.TriangleCount,
+                record.EstimatedResidentBytes,
+                settings.MaximumResidentTriangles,
+                settings.MaximumResidentBytes,
+                settings.MaximumResidentRenderers))
+        {
+            return true;
+        }
+
+        // Evict complete low-priority cells until the higher-priority request
+        // fits. Forced/selected cells and the ring required for an active
+        // overview-to-detail handoff are never candidates.
+        for (var attempt = 0; attempt < 128; attempt++)
+        {
+            IfcStreamedModel victimModel = null;
+            CellState victimCell = null;
+            var worstPriority = incomingPriority;
+            var oldestDesiredTime = float.PositiveInfinity;
+            foreach (var model in ActiveModels)
+            {
+                if (model == null || !model.IsInitialized)
+                {
+                    continue;
+                }
+
+                foreach (var cell in model.residentCells)
+                {
+                    if (!IfcVisibilityPlanner.CanEvict(
+                            cell.Priority,
+                            worstPriority,
+                            Time.unscaledTime <= cell.ForcedUntil,
+                            cell.ReadinessRequired) ||
+                        (Mathf.Approximately(cell.Priority, worstPriority) &&
+                         cell.LastDesiredTime >= oldestDesiredTime))
+                    {
+                        continue;
+                    }
+
+                    victimModel = model;
+                    victimCell = cell;
+                    worstPriority = cell.Priority;
+                    oldestDesiredTime = cell.LastDesiredTime;
                 }
             }
 
+            if (victimModel == null || victimCell == null)
+            {
+                return false;
+            }
+
+            victimModel.EvictCellImmediately(victimCell);
+            if (GlobalBudget.TryReserve(
+                    record.TriangleCount,
+                    record.EstimatedResidentBytes,
+                    settings.MaximumResidentTriangles,
+                    settings.MaximumResidentBytes,
+                    settings.MaximumResidentRenderers))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void EvictCellImmediately(CellState cell)
+    {
+        foreach (var record in cell.Records)
+        {
+            record.UnloadQueued = false;
+            if (record.Resident)
+            {
+                UnloadRecord(record, cell);
+            }
+        }
+
+        cell.Queued = false;
+        cell.FirstDesiredTime = float.NegativeInfinity;
+        residentCells.Remove(cell);
+    }
+
+    private void SetOverviewVisible(bool visible)
+    {
+        overviewRequested = visible;
+        if (overviewRecords == null)
+        {
+            return;
+        }
+
+        using var marker = RendererActivationMarker.Auto();
+        foreach (var record in overviewRecords)
+        {
+            if (record.Renderer != null)
+            {
+                record.Renderer.enabled = visible;
+            }
+        }
+    }
+
+    private void SetDetailVisible(bool visible)
+    {
+        detailVisible = visible;
+        if (records == null)
+        {
+            return;
+        }
+
+        using var marker = RendererActivationMarker.Auto();
+        foreach (var record in records)
+        {
+            var elementVisible = elements.TryGetValue(
+                                     record.ProductLabel,
+                                     out var element) &&
+                                 element.Visible;
+            if (record.Renderer != null)
+            {
+                record.Renderer.enabled = visible && elementVisible;
+            }
+
+            UpdateRecordPickability(record, elementVisible);
+        }
+    }
+
+    private void UpdateAllRecordPickability()
+    {
+        if (records == null)
+        {
+            return;
+        }
+
+        foreach (var record in records)
+        {
+            var elementVisible = elements.TryGetValue(
+                                     record.ProductLabel,
+                                     out var element) &&
+                                 element.Visible;
+            UpdateRecordPickability(record, elementVisible);
+        }
+    }
+
+    private void UpdateRecordPickability(
+        IfcStreamMeshRecord record,
+        bool elementVisible)
+    {
+        var collider = record?.BoundsCollider;
+        if (collider == null)
+        {
+            return;
+        }
+
+        var decision = IfcSelectionPolicy.Evaluate(
+            settings.GenerateMeshColliders,
+            IfcSelectionPolicy.HasValidBounds(record.LocalBounds),
+            record.SelectionBvh != null,
+            settings.ReleaseCpuMeshData,
+            record.Resident,
+            elementVisible,
+            detailVisible);
+        var shouldBePickable =
+            isActiveAndEnabled &&
+            decision.ShouldBePickable &&
+            record.Metadata != null &&
+            record.RuntimeObject != null &&
+            record.RuntimeObject.activeInHierarchy;
+
+        if (!shouldBePickable)
+        {
+            RemoveDetailPickRegistration(collider);
+            SetBoundsColliderEnabled(collider, false);
+            return;
+        }
+
+        if (DetailPickRegistrations.TryGetValue(
+                collider,
+                out var existingRegistration) &&
+            existingRegistration.Model == this &&
+            existingRegistration.Record == record &&
+            existingRegistration.Metadata == record.Metadata)
+        {
+            SetBoundsColliderEnabled(collider, true);
+            return;
+        }
+
+        RemoveDetailPickRegistration(collider);
+        SetBoundsColliderEnabled(collider, true);
+        DetailPickRegistrations[collider] = new IfcDetailPickRegistration(
+            this,
+            record,
+            record.Metadata);
+        pickableColliderCount++;
+    }
+
+    private static void SetBoundsColliderEnabled(
+        BoxCollider collider,
+        bool enabled)
+    {
+        if (collider == null || collider.enabled == enabled)
+        {
+            return;
+        }
+
+        collider.enabled = enabled;
+        selectionPhysicsTransformsDirty = true;
+    }
+
+    private static void RemoveDetailPickRegistration(Collider collider)
+    {
+        if (collider == null ||
+            !DetailPickRegistrations.TryGetValue(
+                collider,
+                out var registration))
+        {
+            return;
+        }
+
+        DetailPickRegistrations.Remove(collider);
+        if (registration.Model != null)
+        {
+            registration.Model.pickableColliderCount = Mathf.Max(
+                0,
+                registration.Model.pickableColliderCount - 1);
+        }
+    }
+
+    private void SetOverviewLoadRequested(bool requested)
+    {
+        if (overviewLoadRequested == requested)
+        {
+            return;
+        }
+
+        overviewLoadRequested = requested;
+        if (requested)
+        {
             StartOverviewLoadingIfNeeded();
             return;
         }
@@ -861,7 +1567,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
     private void StartOverviewLoadingIfNeeded()
     {
-        if (!overviewRequested ||
+        if (!overviewLoadRequested ||
             overviewLoadRoutine != null ||
             overviewRecords == null ||
             overviewRecords.Count == 0)
@@ -883,7 +1589,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
     {
         foreach (var record in overviewRecords)
         {
-            if (!overviewRequested)
+            if (!overviewLoadRequested)
             {
                 break;
             }
@@ -893,24 +1599,16 @@ public sealed class IfcStreamedModel : MonoBehaviour
                 continue;
             }
 
-            while (overviewRequested &&
-                   !GlobalBudget.TryConsumeLoadSlot(settings.MeshLoadsPerFrame))
+            while (overviewLoadRequested &&
+                   !TryReserveWithEviction(
+                       record,
+                       IfcVisibilityPlanner.FrustumPriorityBias))
             {
+                budgetBlockedCount++;
                 yield return null;
             }
 
-            while (overviewRequested &&
-                   !GlobalBudget.TryReserve(
-                       record.TriangleCount,
-                       record.EstimatedResidentBytes,
-                       settings.MaximumResidentTriangles,
-                       settings.MaximumResidentBytes,
-                       settings.MaximumResidentRenderers))
-            {
-                yield return null;
-            }
-
-            if (!overviewRequested)
+            if (!overviewLoadRequested)
             {
                 break;
             }
@@ -936,7 +1634,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
             {
                 while (!readTask.IsCompleted)
                 {
-                    if (!overviewRequested)
+                    if (!overviewLoadRequested)
                     {
                         loadCancellation.Cancel();
                     }
@@ -946,7 +1644,7 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
                 try
                 {
-                    if (!overviewRequested)
+                    if (!overviewLoadRequested)
                     {
                         loadCancellation.Cancel();
                     }
@@ -977,19 +1675,41 @@ public sealed class IfcStreamedModel : MonoBehaviour
                 continue;
             }
 
+            while (overviewLoadRequested &&
+                   !GlobalBudget.TryBeginMeshBuild(
+                       this,
+                       settings.MeshBuildBudgetMilliseconds))
+            {
+                yield return null;
+            }
+
+            if (!overviewLoadRequested)
+            {
+                record.Loading = false;
+                ReleaseReservation(record);
+                break;
+            }
+
             try
             {
                 var buildTimer = Stopwatch.StartNew();
                 CreateOverviewRecord(record, data);
                 buildTimer.Stop();
+                GlobalBudget.RecordMeshBuild(buildTimer.Elapsed.TotalMilliseconds);
                 totalDecodeMilliseconds += data.DecodeMilliseconds;
                 maximumDecodeMilliseconds = Math.Max(
                     maximumDecodeMilliseconds,
                     data.DecodeMilliseconds);
+                totalSelectionBuildMilliseconds +=
+                    data.SelectionBuildMilliseconds;
+                maximumSelectionBuildMilliseconds = Math.Max(
+                    maximumSelectionBuildMilliseconds,
+                    data.SelectionBuildMilliseconds);
                 totalMeshBuildMilliseconds += buildTimer.Elapsed.TotalMilliseconds;
                 maximumMeshBuildMilliseconds = Math.Max(
                     maximumMeshBuildMilliseconds,
                     buildTimer.Elapsed.TotalMilliseconds);
+                UpdateRepresentation();
             }
             catch (Exception exception)
             {
@@ -1031,18 +1751,9 @@ public sealed class IfcStreamedModel : MonoBehaviour
                     continue;
                 }
 
-                while (!GlobalBudget.TryConsumeLoadSlot(settings.MeshLoadsPerFrame))
+                if (!TryReserveWithEviction(record, cell.Priority))
                 {
-                    yield return null;
-                }
-
-                if (!GlobalBudget.TryReserve(
-                        record.TriangleCount,
-                        record.EstimatedResidentBytes,
-                        settings.MaximumResidentTriangles,
-                        settings.MaximumResidentBytes,
-                        settings.MaximumResidentRenderers))
-                {
+                    budgetBlockedCount++;
                     stoppedForBudget = true;
                     break;
                 }
@@ -1118,6 +1829,26 @@ public sealed class IfcStreamedModel : MonoBehaviour
                 maximumDecodeMilliseconds = Math.Max(
                     maximumDecodeMilliseconds,
                     data.DecodeMilliseconds);
+                totalSelectionBuildMilliseconds += data.SelectionBuildMilliseconds;
+                maximumSelectionBuildMilliseconds = Math.Max(
+                    maximumSelectionBuildMilliseconds,
+                    data.SelectionBuildMilliseconds);
+
+                while (IsWanted(cell) &&
+                       !GlobalBudget.TryBeginMeshBuild(
+                           this,
+                           settings.MeshBuildBudgetMilliseconds))
+                {
+                    yield return null;
+                }
+
+                if (!IsWanted(cell))
+                {
+                    record.Loading = false;
+                    ReleaseReservation(record);
+                    cancelledFragmentLoadCount++;
+                    continue;
+                }
 
                 try
                 {
@@ -1126,10 +1857,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
                         var buildTimer = Stopwatch.StartNew();
                         CreateResidentRecord(record, data, element, cell);
                         buildTimer.Stop();
+                        GlobalBudget.RecordMeshBuild(
+                            buildTimer.Elapsed.TotalMilliseconds);
                         totalMeshBuildMilliseconds += buildTimer.Elapsed.TotalMilliseconds;
                         maximumMeshBuildMilliseconds = Math.Max(
                             maximumMeshBuildMilliseconds,
                             buildTimer.Elapsed.TotalMilliseconds);
+                        UpdateRepresentation();
                     }
                 }
                 catch (Exception exception)
@@ -1165,14 +1899,19 @@ public sealed class IfcStreamedModel : MonoBehaviour
         CancellationToken cancellationToken)
     {
         var path = cachePath;
+        var importNormals = settings.ImportNormals;
         var importUvs = settings.ImportTextureCoordinates;
         var importMeshTangents = settings.ImportTangents;
+        var buildSelectionBvh = settings.GenerateMeshColliders &&
+                                settings.UseSelectionBvh;
         return Task.Run(
             () => ReadMeshRecordWorker(
                 path,
                 record,
+                importNormals,
                 importUvs,
                 importMeshTangents,
+                buildSelectionBvh,
                 cancellationToken),
             cancellationToken);
     }
@@ -1180,10 +1919,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
     private static MeshLoadData ReadMeshRecordWorker(
         string path,
         IfcStreamMeshRecord record,
+        bool importNormals,
         bool importUvs,
         bool importMeshTangents,
+        bool buildSelectionBvh,
         CancellationToken cancellationToken)
     {
+        using var decodeMarker = DecodeMarker.Auto();
         var timer = Stopwatch.StartNew();
         using var stream = new FileStream(
             path,
@@ -1223,19 +1965,23 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
 
         var normalCount = ReadChannelCount(reader, vertexCount, "normal");
-        var normals = new Vector3[normalCount];
+        var normals = importNormals ? new Vector3[normalCount] : Array.Empty<Vector3>();
         for (var index = 0; index < normalCount; index++)
         {
-            normals[index] = new Vector3(
+            var normal = new Vector3(
                 reader.ReadSingle(),
                 reader.ReadSingle(),
                 reader.ReadSingle());
-            (normals[index].y, normals[index].z) =
-                (normals[index].z, normals[index].y);
-            var lengthSquared = normals[index].sqrMagnitude;
-            if (lengthSquared > 1e-20f)
+            if (importNormals)
             {
-                normals[index] *= 1f / (float)Math.Sqrt(lengthSquared);
+                (normal.y, normal.z) = (normal.z, normal.y);
+                var lengthSquared = normal.sqrMagnitude;
+                if (lengthSquared > 1e-20f)
+                {
+                    normal *= 1f / (float)Math.Sqrt(lengthSquared);
+                }
+
+                normals[index] = normal;
             }
 
             if ((index + 1) % BinaryItemsPerYield == 0)
@@ -1350,6 +2096,31 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+        IfcTriangleBvh selectionBvh = null;
+        string selectionBuildFailure = null;
+        var selectionBuildMilliseconds = 0d;
+        if (buildSelectionBvh && !record.IsOverview)
+        {
+            using var selectionMarker = SelectionSetupMarker.Auto();
+            var selectionTimer = Stopwatch.StartNew();
+            try
+            {
+                selectionBvh = new IfcTriangleBvh(vertices, subMeshes);
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException &&
+                exception is not OutOfMemoryException)
+            {
+                // A selection accelerator is optional. Preserve the readable
+                // render mesh so this fragment can still use exact fallback
+                // picking instead of failing its visual load.
+                selectionBuildFailure = exception.Message;
+            }
+
+            selectionTimer.Stop();
+            selectionBuildMilliseconds = selectionTimer.Elapsed.TotalMilliseconds;
+        }
+
         timer.Stop();
         return new MeshLoadData
         {
@@ -1362,7 +2133,10 @@ public sealed class IfcStreamedModel : MonoBehaviour
             SubMeshes = subMeshes,
             StyleLabels = styleLabels,
             TriangleProductLabels = triangleProductLabels,
-            DecodeMilliseconds = timer.Elapsed.TotalMilliseconds
+            SelectionBvh = selectionBvh,
+            SelectionBuildFailure = selectionBuildFailure,
+            DecodeMilliseconds = timer.Elapsed.TotalMilliseconds,
+            SelectionBuildMilliseconds = selectionBuildMilliseconds
         };
     }
 
@@ -1372,46 +2146,19 @@ public sealed class IfcStreamedModel : MonoBehaviour
         ElementState element,
         CellState cell)
     {
-        var mesh = new Mesh
+        var mesh = CreateUnityMesh(record, data);
+        if (!string.IsNullOrEmpty(data.SelectionBuildFailure))
         {
-            name = data.Name,
-            indexFormat = data.Vertices.Length > ushort.MaxValue
-                ? IndexFormat.UInt32
-                : IndexFormat.UInt16,
-            vertices = data.Vertices,
-            subMeshCount = data.SubMeshes.Length
-        };
-        if (data.Normals.Length == data.Vertices.Length)
-        {
-            mesh.normals = data.Normals;
+            Debug.LogWarning(
+                $"IFC selection BVH fallback for '{data.Name}': " +
+                data.SelectionBuildFailure);
         }
-
-        if (data.Uvs != null && data.Uvs.Length == data.Vertices.Length)
-        {
-            mesh.uv = data.Uvs;
-        }
-
-        if (data.Tangents != null && data.Tangents.Length == data.Vertices.Length)
-        {
-            mesh.tangents = data.Tangents;
-        }
-
-        for (var subMesh = 0; subMesh < data.SubMeshes.Length; subMesh++)
-        {
-            mesh.SetTriangles(data.SubMeshes[subMesh], subMesh, false);
-        }
-
-        if (data.Normals.Length != data.Vertices.Length)
-        {
-            mesh.RecalculateNormals();
-        }
-
-        mesh.RecalculateBounds();
 
         var parent = parentsByProduct.TryGetValue(data.ProductLabel, out var productParent)
             ? productParent
             : transform;
         var fragment = AcquireFragment(data.Name, parent);
+        fragment.layer = IfcSelectionLayer;
         var meshFilter = fragment.GetComponent<MeshFilter>();
         meshFilter.sharedMesh = mesh;
         var renderer = fragment.GetComponent<MeshRenderer>();
@@ -1425,30 +2172,35 @@ public sealed class IfcStreamedModel : MonoBehaviour
         }
 
         renderer.sharedMaterials = materials;
-        renderer.enabled = element.Visible;
+        renderer.enabled = element.Visible && detailVisible;
 
-        var keepReadable = false;
         var boundsCollider = fragment.GetComponent<BoxCollider>();
-        if (settings.GenerateMeshColliders)
+        var hasValidBounds = IfcSelectionPolicy.HasValidBounds(record.LocalBounds);
+        var selectionPolicy = IfcSelectionPolicy.Evaluate(
+            settings.GenerateMeshColliders,
+            hasValidBounds,
+            data.SelectionBvh != null,
+            settings.ReleaseCpuMeshData,
+            resident: true,
+            elementVisible: element.Visible,
+            detailVisible);
+        using (ColliderSetupMarker.Auto())
         {
-            var hasUsableColliderTriangle = ContainsUsableColliderTriangle(
-                data.Vertices,
-                data.SubMeshes);
-            if (hasUsableColliderTriangle)
+            SetBoundsColliderEnabled(boundsCollider, false);
+            if (selectionPolicy.ShouldEnableBoundsCollider)
             {
-                boundsCollider.center = mesh.bounds.center;
-                boundsCollider.size = mesh.bounds.size;
-                boundsCollider.enabled = true;
-                keepReadable = true;
+                var minimumThickness = (float)(
+                    MinimumBoundsColliderThicknessMetres /
+                    Math.Max(Math.Abs(metresPerUnit), 1e-9d));
+                boundsCollider.center = record.LocalBounds.center;
+                boundsCollider.size = IfcSelectionPolicy.WithMinimumThickness(
+                    record.LocalBounds.size,
+                    minimumThickness);
+                selectionPhysicsTransformsDirty = true;
             }
         }
 
-        if (!keepReadable)
-        {
-            boundsCollider.enabled = false;
-        }
-
-        if (settings.ReleaseCpuMeshData && !keepReadable)
+        if (selectionPolicy.ShouldReleaseCpuMeshData)
         {
             mesh.UploadMeshData(true);
         }
@@ -1456,8 +2208,16 @@ public sealed class IfcStreamedModel : MonoBehaviour
         record.Mesh = mesh;
         record.Renderer = renderer;
         record.RuntimeObject = fragment;
+        record.BoundsCollider = boundsCollider;
+        record.Metadata = productParent != null &&
+                          productParent.TryGetComponent<IfcElementMetadata>(
+                              out var metadata)
+            ? metadata
+            : null;
+        record.SelectionBvh = data.SelectionBvh;
         record.Loading = false;
         record.Resident = true;
+        residentSelectionBvhBytes += record.SelectionBvh?.EstimatedBytes ?? 0L;
         element.Renderers.Add(renderer);
         cell.ResidentRecordCount++;
         residentCells.Add(cell);
@@ -1465,6 +2225,13 @@ public sealed class IfcStreamedModel : MonoBehaviour
         residentBytes += record.EstimatedResidentBytes;
         residentRenderers++;
         loadedFragmentCount++;
+        UpdateRecordPickability(record, element.Visible);
+        if (cell.FirstDesiredTime >= 0f)
+        {
+            totalQueueWaitMilliseconds +=
+                (Time.unscaledTime - cell.FirstDesiredTime) * 1_000d;
+        }
+
         ApplyHighlight(renderer, element.Highlighted);
     }
 
@@ -1479,34 +2246,10 @@ public sealed class IfcStreamedModel : MonoBehaviour
                 "The IFC surface overview is missing its product identity map.");
         }
 
-        var mesh = new Mesh
-        {
-            name = data.Name,
-            indexFormat = data.Vertices.Length > ushort.MaxValue
-                ? IndexFormat.UInt32
-                : IndexFormat.UInt16,
-            vertices = data.Vertices,
-            subMeshCount = data.SubMeshes.Length
-        };
-        if (data.Normals.Length == data.Vertices.Length)
-        {
-            mesh.normals = data.Normals;
-        }
-
-        for (var subMesh = 0; subMesh < data.SubMeshes.Length; subMesh++)
-        {
-            mesh.SetTriangles(data.SubMeshes[subMesh], subMesh, false);
-        }
-
-        if (data.Normals.Length != data.Vertices.Length)
-        {
-            mesh.RecalculateNormals();
-        }
-
-        mesh.RecalculateBounds();
+        var mesh = CreateUnityMesh(record, data);
         var fragment = AcquireFragment(data.Name, transform);
         fragment.GetComponent<MeshFilter>().sharedMesh = mesh;
-        fragment.GetComponent<BoxCollider>().enabled = false;
+        SetBoundsColliderEnabled(fragment.GetComponent<BoxCollider>(), false);
         var renderer = fragment.GetComponent<MeshRenderer>();
         var materials = new Material[data.StyleLabels.Length];
         for (var index = 0; index < materials.Length; index++)
@@ -1531,6 +2274,117 @@ public sealed class IfcStreamedModel : MonoBehaviour
         overviewResidentRenderers++;
     }
 
+    private Mesh CreateUnityMesh(IfcStreamMeshRecord record, MeshLoadData data)
+    {
+        using var marker = MeshConstructionMarker.Auto();
+        var hasOnlyPositions = data.Normals.Length == 0 &&
+                               data.Uvs == null &&
+                               data.Tangents == null;
+        if (!hasOnlyPositions)
+        {
+            var legacyMesh = new Mesh
+            {
+                name = data.Name,
+                indexFormat = data.Vertices.Length > ushort.MaxValue
+                    ? IndexFormat.UInt32
+                    : IndexFormat.UInt16,
+                vertices = data.Vertices,
+                subMeshCount = data.SubMeshes.Length,
+                bounds = record.LocalBounds
+            };
+            if (data.Normals.Length == data.Vertices.Length)
+            {
+                legacyMesh.normals = data.Normals;
+            }
+
+            if (data.Uvs != null && data.Uvs.Length == data.Vertices.Length)
+            {
+                legacyMesh.uv = data.Uvs;
+            }
+
+            if (data.Tangents != null && data.Tangents.Length == data.Vertices.Length)
+            {
+                legacyMesh.tangents = data.Tangents;
+            }
+
+            for (var subMesh = 0; subMesh < data.SubMeshes.Length; subMesh++)
+            {
+                legacyMesh.SetTriangles(data.SubMeshes[subMesh], subMesh, false);
+            }
+
+            if (settings.ImportNormals &&
+                data.Normals.Length != data.Vertices.Length)
+            {
+                legacyMesh.RecalculateNormals();
+            }
+
+            return legacyMesh;
+        }
+
+        var meshDataArray = Mesh.AllocateWritableMeshData(1);
+        var meshData = meshDataArray[0];
+        meshData.SetVertexBufferParams(
+            data.Vertices.Length,
+            new VertexAttributeDescriptor(
+                VertexAttribute.Position,
+                VertexAttributeFormat.Float32,
+                3));
+        meshData.GetVertexData<Vector3>().CopyFrom(data.Vertices);
+
+        var indexFormat = data.Vertices.Length > ushort.MaxValue
+            ? IndexFormat.UInt32
+            : IndexFormat.UInt16;
+        meshData.SetIndexBufferParams(record.IndexCount, indexFormat);
+        if (indexFormat == IndexFormat.UInt32)
+        {
+            var destination = meshData.GetIndexData<uint>();
+            var destinationIndex = 0;
+            foreach (var source in data.SubMeshes)
+            {
+                foreach (var index in source)
+                {
+                    destination[destinationIndex++] = (uint)index;
+                }
+            }
+        }
+        else
+        {
+            var destination = meshData.GetIndexData<ushort>();
+            var destinationIndex = 0;
+            foreach (var source in data.SubMeshes)
+            {
+                foreach (var index in source)
+                {
+                    destination[destinationIndex++] = (ushort)index;
+                }
+            }
+        }
+
+        var updateFlags = MeshUpdateFlags.DontRecalculateBounds |
+                          MeshUpdateFlags.DontValidateIndices |
+                          MeshUpdateFlags.DontNotifyMeshUsers;
+        meshData.subMeshCount = data.SubMeshes.Length;
+        var indexStart = 0;
+        for (var subMesh = 0; subMesh < data.SubMeshes.Length; subMesh++)
+        {
+            var indexCount = data.SubMeshes[subMesh].Length;
+            meshData.SetSubMesh(
+                subMesh,
+                new SubMeshDescriptor(indexStart, indexCount, MeshTopology.Triangles)
+                {
+                    bounds = record.LocalBounds,
+                    vertexCount = data.Vertices.Length
+                },
+                updateFlags);
+            indexStart += indexCount;
+        }
+
+        var mesh = new Mesh { name = data.Name };
+        Mesh.ApplyAndDisposeWritableMeshData(meshDataArray, mesh, updateFlags);
+        mesh.bounds = record.LocalBounds;
+        return mesh;
+    }
+
     private GameObject AcquireFragment(string objectName, Transform parent)
     {
         GameObject fragment;
@@ -1545,48 +2399,15 @@ public sealed class IfcStreamedModel : MonoBehaviour
             fragment.AddComponent<MeshFilter>();
             fragment.AddComponent<MeshRenderer>();
             var collider = fragment.AddComponent<BoxCollider>();
-            collider.enabled = false;
+            SetBoundsColliderEnabled(collider, false);
         }
 
+        var boundsCollider = fragment.GetComponent<BoxCollider>();
+        RemoveDetailPickRegistration(boundsCollider);
+        SetBoundsColliderEnabled(boundsCollider, false);
         fragment.transform.SetParent(parent, false);
         fragment.SetActive(true);
         return fragment;
-    }
-
-    private static bool ContainsUsableColliderTriangle(
-        IReadOnlyList<Vector3> vertices,
-        IReadOnlyList<int[]> subMeshes)
-    {
-        // IFC tessellation can contain collapsed faces. MeshRenderer tolerates
-        // them, but PhysX reports an error when the entire MeshCollider has no
-        // triangle with three distinct, non-collinear positions.
-        foreach (var indices in subMeshes)
-        {
-            for (var index = 0; index + 2 < indices.Length; index += 3)
-            {
-                var vertex0 = vertices[indices[index]];
-                var edge1 = vertices[indices[index + 1]] - vertex0;
-                var edge2 = vertices[indices[index + 2]] - vertex0;
-                var maximumEdgeSquared = Mathf.Max(
-                    edge1.sqrMagnitude,
-                    edge2.sqrMagnitude,
-                    (edge2 - edge1).sqrMagnitude);
-                if (maximumEdgeSquared <= Mathf.Epsilon)
-                {
-                    continue;
-                }
-
-                // Scale-relative test: reject triangles whose area has
-                // collapsed compared with their longest edge.
-                if (Vector3.Cross(edge1, edge2).sqrMagnitude >
-                    maximumEdgeSquared * maximumEdgeSquared * 1e-12f)
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     private void UnloadCell(CellState cell)
@@ -1692,11 +2513,23 @@ public sealed class IfcStreamedModel : MonoBehaviour
             element.Renderers.Remove(record.Renderer);
         }
 
+        if (record.BoundsCollider != null)
+        {
+            RemoveDetailPickRegistration(record.BoundsCollider);
+            SetBoundsColliderEnabled(record.BoundsCollider, false);
+        }
+
+        residentSelectionBvhBytes = Math.Max(
+            0L,
+            residentSelectionBvhBytes - (record.SelectionBvh?.EstimatedBytes ?? 0L));
         ReturnFragment(record.RuntimeObject);
         DestroyOwned(record.Mesh);
         record.RuntimeObject = null;
         record.Mesh = null;
         record.Renderer = null;
+        record.BoundsCollider = null;
+        record.Metadata = null;
+        record.SelectionBvh = null;
         record.Loading = false;
         record.Resident = false;
         cell.ResidentRecordCount = Mathf.Max(0, cell.ResidentRecordCount - 1);
@@ -1733,7 +2566,12 @@ public sealed class IfcStreamedModel : MonoBehaviour
         renderer.enabled = false;
         renderer.sharedMaterials = Array.Empty<Material>();
         fragment.GetComponent<MeshFilter>().sharedMesh = null;
-        fragment.GetComponent<BoxCollider>().enabled = false;
+        var boundsCollider = fragment.GetComponent<BoxCollider>();
+        RemoveDetailPickRegistration(boundsCollider);
+        SetBoundsColliderEnabled(boundsCollider, false);
+        boundsCollider.center = Vector3.zero;
+        boundsCollider.size = Vector3.one;
+        selectionPhysicsTransformsDirty = true;
         fragment.transform.SetParent(transform, false);
         fragment.SetActive(false);
         if (fragmentPool.Count < Math.Min(
@@ -1781,12 +2619,32 @@ public sealed class IfcStreamedModel : MonoBehaviour
     {
         var global = GlobalBudget.GetSnapshot();
         var completedLoads = Math.Max(1, loadedFragmentCount);
+        var desiredRecordCount = 0;
+        var desiredResidentCount = 0;
+        foreach (var cell in desiredCells)
+        {
+            foreach (var record in cell.Records)
+            {
+                desiredRecordCount++;
+                desiredResidentCount += record.Resident ? 1 : 0;
+            }
+        }
+
+        var desiredResidentPercent = desiredRecordCount > 0
+            ? 100f * desiredResidentCount / desiredRecordCount
+            : 100f;
         Debug.Log(
             $"IFC streaming '{name}': {residentRenderers:N0}/{FragmentCount:N0} " +
             $"fragments resident, {residentTriangles:N0}/{TotalTriangleCount:N0} triangles, " +
             $"overview {overviewResidentRenderers:N0} renderers / " +
             $"{overviewResidentTriangles:N0}/{OverviewTriangleCount:N0} triangles " +
-            $"({(overviewRequested ? "visible" : "inactive")}), " +
+            $"({(overviewRequested ? "visible" : overviewLoadRequested ? "preloading" : "inactive")}), " +
+            $"transition {representationState}, desired detail " +
+            $"{desiredResidentPercent:F0}% resident; first/50/90/100% " +
+            $"{lastDetailFirstVisibleMilliseconds:F0}/" +
+            $"{detailResident50Milliseconds:F0}/" +
+            $"{detailResident90Milliseconds:F0}/" +
+            $"{detailResident100Milliseconds:F0} ms, " +
             $"{residentBytes / (1024f * 1024f):F1} MiB estimated mesh memory; " +
             $"global {global.Renderers:N0} renderers, {global.Triangles:N0} triangles, " +
             $"{global.Bytes / (1024f * 1024f):F1} MiB; " +
@@ -1794,10 +2652,16 @@ public sealed class IfcStreamedModel : MonoBehaviour
             $"unload queue {pendingUnloads.Count:N0}, " +
             $"loaded/unloaded/cancelled {loadedFragmentCount:N0}/" +
             $"{unloadedFragmentCount:N0}/{cancelledFragmentLoadCount:N0}; " +
+            $"pickable {pickableColliderCount:N0}, selection BVH " +
+            $"{residentSelectionBvhBytes / (1024f * 1024f):F1} MiB; " +
             $"decode avg/max {totalDecodeMilliseconds / completedLoads:F2}/" +
             $"{maximumDecodeMilliseconds:F2} ms, mesh build avg/max " +
             $"{totalMeshBuildMilliseconds / completedLoads:F2}/" +
-            $"{maximumMeshBuildMilliseconds:F2} ms.");
+            $"{maximumMeshBuildMilliseconds:F2} ms, BVH build avg/max " +
+            $"{totalSelectionBuildMilliseconds / completedLoads:F2}/" +
+            $"{maximumSelectionBuildMilliseconds:F2} ms, queue wait avg " +
+            $"{totalQueueWaitMilliseconds / completedLoads:F1} ms, " +
+            $"budget blocks {budgetBlockedCount:N0}.");
     }
 
     private void ReleaseAll()
@@ -1827,6 +2691,14 @@ public sealed class IfcStreamedModel : MonoBehaviour
 
         lifetimeCancellation?.Dispose();
         lifetimeCancellation = null;
+        if (records != null)
+        {
+            foreach (var record in records)
+            {
+                RemoveDetailPickRegistration(record.BoundsCollider);
+            }
+        }
+
         while (fragmentPool.Count > 0)
         {
             DestroyOwned(fragmentPool.Pop());
@@ -1845,9 +2717,23 @@ public sealed class IfcStreamedModel : MonoBehaviour
         residentTriangles = 0;
         residentBytes = 0;
         residentRenderers = 0;
+        pickableColliderCount = 0;
+        residentSelectionBvhBytes = 0L;
         overviewResidentTriangles = 0;
         overviewResidentRenderers = 0;
         overviewRequested = false;
+        overviewLoadRequested = false;
+        detailVisible = false;
+        detailWanted = false;
+        representationState = IfcRepresentationState.OverviewOnly;
+        previousCameraSampleTime = float.NegativeInfinity;
+        detailPreloadStartedTime = float.NegativeInfinity;
+        lastDetailFirstVisibleMilliseconds = -1f;
+        detailResident50Milliseconds = -1f;
+        detailResident90Milliseconds = -1f;
+        detailResident100Milliseconds = -1f;
+        budgetBlockedCount = 0;
+        totalQueueWaitMilliseconds = 0d;
         loadedFragmentCount = 0;
         unloadedFragmentCount = 0;
         cancelledFragmentLoadCount = 0;
@@ -1855,6 +2741,8 @@ public sealed class IfcStreamedModel : MonoBehaviour
         maximumDecodeMilliseconds = 0d;
         totalMeshBuildMilliseconds = 0d;
         maximumMeshBuildMilliseconds = 0d;
+        totalSelectionBuildMilliseconds = 0d;
+        maximumSelectionBuildMilliseconds = 0d;
         modelLocalBounds = default;
         hasModelBounds = false;
         IsInitialized = false;
@@ -1992,8 +2880,9 @@ public sealed class IfcStreamedModel : MonoBehaviour
         private static long bytes;
         private static int renderers;
         private static int activeModels;
-        private static int loadSlotFrame = -1;
-        private static int loadSlotsUsed;
+        private static int meshBuildFrame = -1;
+        private static double meshBuildMilliseconds;
+        private static readonly HashSet<IfcStreamedModel> ModelsBuiltThisFrame = new();
 
         public static void RegisterModel()
         {
@@ -2038,21 +2927,31 @@ public sealed class IfcStreamedModel : MonoBehaviour
             renderers = Mathf.Max(0, renderers - rendererCount);
         }
 
-        public static bool TryConsumeLoadSlot(int maximumLoadsPerFrame)
+        public static bool TryBeginMeshBuild(
+            IfcStreamedModel model,
+            double maximumMillisecondsPerFrame)
         {
-            if (loadSlotFrame != Time.frameCount)
+            if (meshBuildFrame != Time.frameCount)
             {
-                loadSlotFrame = Time.frameCount;
-                loadSlotsUsed = 0;
+                meshBuildFrame = Time.frameCount;
+                meshBuildMilliseconds = 0d;
+                ModelsBuiltThisFrame.Clear();
             }
 
-            if (loadSlotsUsed >= maximumLoadsPerFrame)
+            if (ModelsBuiltThisFrame.Contains(model) ||
+                (ModelsBuiltThisFrame.Count > 0 &&
+                 meshBuildMilliseconds >= maximumMillisecondsPerFrame))
             {
                 return false;
             }
 
-            loadSlotsUsed++;
+            ModelsBuiltThisFrame.Add(model);
             return true;
+        }
+
+        public static void RecordMeshBuild(double elapsedMilliseconds)
+        {
+            meshBuildMilliseconds += Math.Max(0d, elapsedMilliseconds);
         }
 
         public static Snapshot GetSnapshot()
